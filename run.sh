@@ -44,6 +44,10 @@ case "${1:-help}" in
     sleep 1
     $0 start
     ;;
+  test)
+    echo "🧪 运行测试..."
+    uv run python3 -m pytest tests/ -v 2>/dev/null || uv run python3 tests/test_core.py
+    ;;
   update)
     echo "🔄 拉取最新代码..."
     OLD_HASH=$(git rev-parse HEAD)
@@ -52,9 +56,18 @@ case "${1:-help}" in
       exit 1
     fi
     NEW_HASH=$(git rev-parse HEAD)
-    if [ "$OLD_HASH" != "$NEW_HASH" ] && git diff "$OLD_HASH".."$NEW_HASH" -- requirements.txt | grep -q .; then
-      echo "📦 检测到依赖变更，更新中..."
-      uv pip install -r requirements.txt && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
+    if [ "$OLD_HASH" != "$NEW_HASH" ]; then
+      if git diff "$OLD_HASH".."$NEW_HASH" -- pyproject.toml | grep -q .; then
+        echo "📦 检测到依赖变更，同步中..."
+        uv sync && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
+      elif git diff "$OLD_HASH".."$NEW_HASH" -- requirements.txt | grep -q .; then
+        echo "📦 检测到依赖变更（requirements.txt），安装中..."
+        uv pip install -r requirements.txt && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
+      else
+        echo "✅ 已是最新，无需更新依赖"
+      fi
+    else
+      echo "✅ 已是最新"
     fi
     ;;
   *)
