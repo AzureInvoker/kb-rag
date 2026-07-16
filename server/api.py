@@ -15,7 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .engine import get_engine
-from .config import get_config
+try:
+    from .config import get_config
+except ImportError:
+    from config import get_config
 from .lightrag_engine import LightRAGEngine
 from .search import SearchRouter
 from .mcp_handler import TOOLS, handle_tool, async_handle_tool, _clean_text, _clean_list, _make_item
