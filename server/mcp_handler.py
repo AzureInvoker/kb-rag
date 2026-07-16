@@ -84,7 +84,7 @@ def _format_item_table(item: dict) -> str:
 TOOLS = [
     {
         "name": "kb_search",
-        "description": "基础语义搜索（ChromaDB + BM25 向量引擎），快速返回最匹配的知识条目。支持按 doc_type 精确筛选。",
+        "description": "基础语义搜索（ChromaDB + BM25 向量引擎）。\n【使用流程】① 不确定搜什么时先调 kb_stats 看有哪些 doc_type → ② 输入关键词搜索 → ③ 结果不够精准时加 doc_type 缩小范围 → ④ 需要跨文档关联时换 kb_agentic_search 或 kb_graph_search",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -97,7 +97,7 @@ TOOLS = [
     },
     {
         "name": "kb_list",
-        "description": "浏览知识条目列表（支持按 doc_type 筛选和分页）。",
+        "description": "浏览知识条目列表（支持按 doc_type 筛选和分页）。\n【使用流程】① 先调 kb_stats 看总览 → ② 用 kb_list 按 type 浏览 → ③ 看到感兴趣条目用 kb_get 看详情",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -110,7 +110,7 @@ TOOLS = [
     },
     {
         "name": "kb_get",
-        "description": "按 ID 获取知识条目的完整内容。如果不知道 ID，先调 kb_search / kb_list 找到目标。",
+        "description": "按 ID 获取知识条目的完整内容（含 content + metadata 全部字段）。\n【使用场景】先调 kb_search / kb_list 找到目标条目的 ID，再用本工具看详情",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -121,12 +121,12 @@ TOOLS = [
     },
     {
         "name": "kb_stats",
-        "description": "获取知识库统计信息（总数、各文档类型分布）。",
+        "description": "获取知识库统计信息（总数、各文档类型分布）。\n【使用场景】① 第一次用先调此工具了解知识库规模 ② 确定有哪些 doc_type 后再做针对性搜索或添加",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "kb_add",
-        "description": "添加单条知识条目。title 必填，doc_type 默认 doc。metadata 字段接受 JSON 对象，用于存放类型专属的字段。",
+        "description": "添加单条知识条目。\n【新增字段说明】\n  - title：必填，条目标题\n  - doc_type：文档类型，可自定义（如 test_case/doc/faq/wiki），默认 doc\n  - content：正文内容（嵌入主要基于此字段，前800字）\n  - metadata：类型专属的灵活 JSON 字段。不同类型建议的字段：\n    · test_case → {\"module\":\"登录\", \"priority\":\"P0\", \"preconditions\":\"已登录\", \"expected\":\"跳转首页\"}\n    · doc       → {\"author\":\"张三\", \"source\":\"内部文档\", \"version\":\"1.0\"}\n    · faq       → {\"category\":\"账户问题\", \"answer\":\"具体回答\"}\n  - tags：标签列表\n【使用流程】先在 kb_stats 中确认是否存在目标 doc_type → 选类型填写添加",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -141,7 +141,7 @@ TOOLS = [
     },
     {
         "name": "kb_add_batch",
-        "description": "批量添加知识条目（逐条清洗，单条失败不阻塞整体）。返回成功/失败统计。",
+        "description": "批量添加知识条目（逐条清洗，单条失败不阻塞整体）。字段规则同 kb_add。返回成功/失败统计 + 新增条目 ID 列表。\n【使用场景】需要一次性录入多条同类型数据时使用",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -166,7 +166,7 @@ TOOLS = [
     },
     {
         "name": "kb_delete",
-        "description": "删除知识条目。支持按 ID 删除单条，或按 doc_type 批量删除。",
+        "description": "删除知识条目。支持两种模式：按 ID 删除单条，或按 doc_type 批量删除。\n【使用场景】① 清理测试数据 ② 删除错误的录入 ③ 整批替换某类型数据\n注意：批量删除不可撤销，删除不同步清除 LightRAG 图谱中的对应实体",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -178,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "kb_graph_search",
-        "description": "【需 LightRAG 启用】知识图谱检索——通过实体-关系图做跨文档关联推理。",
+        "description": "【需 LightRAG 启用】知识图谱检索——通过实体-关系图做跨文档关联推理。\\n【适用场景】① 跨文档关联查询（如 XX模块关联哪些文档）② 多跳推理 ③ 概念关系发现\\n【使用流程】先调 kb_graph_status 确认图谱就绪 → 用本工具搜索 → 结果空洞时简化查询词\\n【注意】只返回实体和关系，不返回完整文档内容。想看详情用 kb_get",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -190,7 +190,7 @@ TOOLS = [
     },
     {
         "name": "kb_agentic_search",
-        "description": "【推荐】自适应检索——自动融合向量搜索 + 知识图谱增强。",
+        "description": "【推荐】自适应检索——自动融合向量搜索 + 知识图谱增强。先走 ChromaDB 做语义匹配，再调用 LightRAG 图谱补充实体关系。\n【适用场景】① 复杂问题不确定怎么精确表达关键词 ② 需要同时看语义匹配和相关实体关系 ③ kb_search 首轮不够理想时的深入检索\n【使用流程】先用 kb_search 试 → 结果不够好时换本工具看有没有图谱增强信息 → 想看纯推理用 kb_graph_search",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -203,7 +203,7 @@ TOOLS = [
     },
     {
         "name": "kb_graph_status",
-        "description": "诊断 LightRAG 知识图谱状态：是否启用、是否已建图、实体数量、LLM 提供商等。",
+        "description": "诊断 LightRAG 知识图谱状态：是否启用、是否已建图、实体数量、LLM 提供商、处理状态等。\n【使用场景】① kb_graph_search 无结果时先调此工具诊断 ② 确认图谱就绪后再做图谱检索 ③ 建图过程中查看处理进度",
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]

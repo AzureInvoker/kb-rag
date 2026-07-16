@@ -377,3 +377,34 @@ class LightRAGEngine:
         except Exception as e:
             # 降级：至少返回启用/就绪信息
             return {"enabled": True, "ready": True, "message": str(e)}
+
+    async def async_get_graph_data(self) -> dict:
+        """异步获取图谱完整数据（节点+关系），供前端可视化"""
+        if not self.is_available():
+            return {"ok": False, "message": self._error or "LightRAG 不可用", "nodes": [], "edges": []}
+        await self._ensure_storages_async()
+        if not self._ready:
+            return {"ok": False, "message": self._error or "存储初始化失败", "nodes": [], "edges": []}
+        try:
+            graph = await self._rag.get_knowledge_graph("")
+            nodes = []
+            edges = []
+            if graph and isinstance(graph, dict):
+                for n in graph.get("nodes", []):
+                    nodes.append({
+                        "id": n.get("id", ""),
+                        "name": n.get("name", n.get("id", "")),
+                        "type": n.get("type", n.get("entity_type", "entity")),
+                        "description": n.get("description", "")[:200],
+                    })
+                for e in graph.get("edges", []):
+                    edges.append({
+                        "source": e.get("source", e.get("src_id", "")),
+                        "target": e.get("target", e.get("tgt_id", "")),
+                        "label": e.get("label", e.get("description", "")),
+                        "weight": e.get("weight", 1),
+                    })
+            return {"ok": True, "nodes": nodes, "edges": edges}
+        except Exception as e:
+            logger.error(f"get_graph_data 失败: {e}")
+            return {"ok": False, "message": str(e), "nodes": [], "edges": []}
