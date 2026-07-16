@@ -53,7 +53,7 @@ class VectorEngine:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         self._collection = client.get_or_create_collection(
             name=COLLECTION_NAME,
-            metadata={"hnsw: space": "cosine"},
+            metadata={"hnsw:space": "cosine"},
         )
         logger.info(f"ChromaDB 就绪: {CHROMA_DIR} / {COLLECTION_NAME}")
 

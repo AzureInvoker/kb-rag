@@ -58,7 +58,6 @@ def _make_item(args: dict) -> KnowledgeItem:
         content=content,
         metadata=raw_meta,
         tags=_clean_list(args.get("tags", [])),
-        creator=_clean_text(args.get("creator", "")) or "MCP",
         created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
 
