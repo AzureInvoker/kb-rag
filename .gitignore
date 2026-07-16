@@ -1,0 +1,7 @@
+.chroma_db/
+.lightrag_storage/
+__pycache__/
+*.pyc
+.env
+config.yaml
+/tmp/
