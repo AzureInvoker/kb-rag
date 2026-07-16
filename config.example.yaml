@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────
+# 测试用例知识库 — 配置文件参考模板
+# 复制为 config.yaml 并按需修改
+# config.yaml 本身已被 .gitignore 忽略，
+# 各服务器可独立维护配置
+# ──────────────────────────────────────────
+
+# API 服务
+api:
+  host: "0.0.0.0"
+  port: 8765
+
+# 向量引擎
+engine:
+  # 嵌入模型，可选：
+  #   BAAI/bge-small-zh-v1.5    (33MB, ⭐推荐，原生中文)
+  #   intfloat/multilingual-e5-small  (118MB, 多语言效果更好)
+  #   paraphrase-multilingual-MiniLM-L12-v2  (470MB, 其他服务器在用)
+  embed_model: "intfloat/multilingual-e5-small"
+  chroma_dir: ".chroma_db"
+
+# ═══════════════════════════════════════════
+# LightRAG 知识图谱增强（v3.0.0 新增）
+# 不开启不影响基础搜索功能
+# ═══════════════════════════════════════════
+lightrag:
+  # 是否启用知识图谱
+  #   true  = 开启，建图需 DeepSeek/Ollama API，首次启动较慢（加载模型）
+  #   false = 仅使用 ChromaDB 向量搜索
+  enabled: false
+
+  # 图谱存储目录（相对于项目根目录）
+  working_dir: ".lightrag_storage"
+
+  # LLM 配置（建图时提取实体关系用）
+  llm:
+    # 后端类型: deepseek | ollama
+    provider: deepseek
+    # DeepSeek API Key（推荐用环境变量引用）
+    # DeepSeek 使用标准 API 地址 https://api.deepseek.com/v1，无需配 base_url
+    api_key: "${DEEPSEEK_API_KEY}"
+    # 模型名
+    model: deepseek-chat
+    # ── Ollama 模式示例（注释掉上面 deepseek 配置，取消下面注释）──
+    # base_url: http://localhost:11434
+    # model: qwen2.5:7b
+
+  # 嵌入模型（CPU 即可，首次启动自动下载）
+  # 一般和 engine.embed_model 保持一致即可
+  embed_model: "intfloat/multilingual-e5-small"
+
+  # 检索参数
+  top_k: 20        # 每个查询返回的最大候选数
+  mode: mix        # 检索模式: local | global | mix

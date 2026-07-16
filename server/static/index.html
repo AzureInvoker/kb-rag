@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KB-RAG 通用知识库</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --radius: 8px;
+    --font: 'Segoe UI', -apple-system, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+
+  /* Header */
+  .header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .badge {
+    background: var(--accent); color: #000; padding: 2px 10px;
+    border-radius: 12px; font-size: 11px; font-weight: 600;
+  }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+  .tab {
+    padding: 8px 20px; border-radius: var(--radius); cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text2); font-size: 13px; transition: all 0.15s;
+  }
+  .tab:hover { background: var(--surface2); color: var(--text); }
+  .tab.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+
+  /* Panels */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Form elements */
+  input, select, textarea {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: var(--radius);
+    font-size: 13px; width: 100%;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+  textarea { font-family: var(--font); resize: vertical; min-height: 80px; }
+  label { display: block; color: var(--text2); margin-bottom: 4px; font-size: 12px; }
+  .form-row { margin-bottom: 12px; }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 20px; border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer; font-size: 13px;
+    background: var(--surface); color: var(--text); transition: all 0.15s;
+  }
+  .btn:hover { background: var(--surface2); }
+  .btn-primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover { filter: brightness(1.15); }
+  .btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
+
+  /* Search */
+  .search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+  .search-row input { flex: 1; }
+  .search-row select { width: 140px; flex-shrink: 0; }
+
+  /* Results */
+  .result-item {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px; margin-bottom: 8px;
+  }
+  .result-item .title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .result-item .title .type-tag {
+    display: inline-block; background: var(--surface2); color: var(--text2);
+    font-size: 11px; padding: 1px 8px; border-radius: 10px; margin-left: 8px;
+  }
+  .result-item .meta { color: var(--text2); font-size: 12px; margin-bottom: 6px; }
+  .result-item .summary { color: var(--text2); font-size: 13px; }
+  .score-bar {
+    display: inline-block; height: 6px; border-radius: 3px;
+    background: linear-gradient(90deg, var(--green), var(--orange));
+  }
+
+  /* Table for browse */
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th, .data-table td {
+    text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .data-table th { color: var(--text2); font-weight: 500; }
+
+  /* Stats */
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .stat-card .stat-num { font-size: 32px; font-weight: 700; color: var(--accent); }
+  .stat-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
+  .stat-bar { height: 8px; border-radius: 4px; background: var(--accent); }
+
+  /* JSON editor */
+  .json-area {
+    font-family: 'Consolas', monospace; font-size: 12px;
+    min-height: 100px; width: 100%;
+  }
+
+  /* Misc */
+  .flex-row { display: flex; gap: 8px; align-items: center; }
+  .mt-8 { margin-top: 8px; }
+  .mb-8 { margin-bottom: 8px; }
+  .text-muted { color: var(--text2); }
+  .pagination { display: flex; gap: 4px; justify-content: center; margin-top: 16px; }
+  .pagination .page-btn {
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); cursor: pointer; font-size: 12px; color: var(--text);
+  }
+  .pagination .page-btn:hover { background: var(--surface2); }
+  .pagination .page-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    z-index: 999; display: none; max-width: 400px;
+  }
+  .toast.show { display: block; animation: fadeIn 0.2s; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  .loading { color: var(--text2); text-align: center; padding: 20px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>📚 KB-RAG</h1>
+    <span class="badge">通用知识库</span>
+    <span id="totalCount" class="text-muted" style="margin-left:auto; font-size:13px;"></span>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('search')">🔍 搜索</div>
+    <div class="tab" onclick="switchTab('browse')">📋 浏览</div>
+    <div class="tab" onclick="switchTab('add')">➕ 添加</div>
+    <div class="tab" onclick="switchTab('stats')">📊 统计</div>
+  </div>
+
+  <!-- Search Panel -->
+  <div id="panel-search" class="panel active">
+    <div class="search-row">
+      <input id="searchInput" placeholder="输入搜索关键词..." onkeydown="if(event.key==='Enter') doSearch()">
+      <select id="searchType">
+        <option value="">所有类型</option>
+        <option value="test_case">test_case</option>
+        <option value="doc">doc</option>
+        <option value="faq">faq</option>
+        <option value="wiki">wiki</option>
+      </select>
+      <button class="btn btn-primary" onclick="doSearch()">搜索</button>
+    </div>
+    <div id="searchResults"></div>
+  </div>
+
+  <!-- Browse Panel -->
+  <div id="panel-browse" class="panel">
+    <div class="flex-row mb-8">
+      <select id="browseType" onchange="loadBrowse()">
+        <option value="">所有类型</option>
+        <option value="test_case">test_case</option>
+        <option value="doc">doc</option>
+        <option value="faq">faq</option>
+        <option value="wiki">wiki</option>
+      </select>
+      <button class="btn" onclick="loadBrowse()">刷新</button>
+    </div>
+    <div id="browseResults"></div>
+  </div>
+
+  <!-- Add Panel -->
+  <div id="panel-add" class="panel">
+    <div class="form-row">
+      <label>标题 *</label>
+      <input id="addTitle" placeholder="输入标题">
+    </div>
+    <div class="form-row">
+      <label>文档类型</label>
+      <select id="addType">
+        <option value="doc">doc（普通文档）</option>
+        <option value="test_case">test_case（测试用例）</option>
+        <option value="faq">faq（常见问题）</option>
+        <option value="wiki">wiki（维基条目）</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>正文内容</label>
+      <textarea id="addContent" placeholder="正文内容（嵌入主要基于此字段）" rows="4"></textarea>
+    </div>
+    <div class="form-row">
+      <label>标签（逗号分隔）</label>
+      <input id="addTags" placeholder="标签1, 标签2, 标签3">
+    </div>
+    <div class="form-row">
+      <label>metadata（JSON，类型专属的扩展字段）</label>
+      <textarea id="addMetadata" class="json-area" placeholder='如测试用例：{"module": "登录", "priority": "P0", "preconditions": "已注册用户"}'></textarea>
+    </div>
+    <button class="btn btn-primary" onclick="doAdd()">添加</button>
+    <div id="addResult" class="mt-8 text-muted"></div>
+  </div>
+
+  <!-- Stats Panel -->
+  <div id="panel-stats" class="panel">
+    <div id="statsContent"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API = '';
+
+// ── Tab switching ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
+  document.getElementById(`panel-${name}`).classList.add('active');
+  if (name === 'browse') loadBrowse();
+  if (name === 'stats') loadStats();
+}
+
+// ── Toast ──
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = (isError ? '❌ ' : '✅ ') + msg;
+  el.style.borderColor = isError ? 'var(--red)' : 'var(--green)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ── Search ──
+async function doSearch() {
+  const query = document.getElementById('searchInput').value.trim();
+  if (!query) { toast('请输入搜索关键词', true); return; }
+  const docType = document.getElementById('searchType').value;
+  const el = document.getElementById('searchResults');
+  el.innerHTML = '<div class="loading">搜索中...</div>';
+
+  try {
+    const params = new URLSearchParams({ query, n_results: 10 });
+    if (docType) params.set('doc_type', docType);
+    const res = await fetch(`${API}/api/v1/search?${params}`);
+    const data = await res.json();
+    if (!data.results || data.results.length === 0) {
+      el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">未找到匹配结果</div>';
+      return;
+    }
+    let html = `<div class="text-muted mb-8">共找到 ${data.total} 条</div>`;
+    for (const r of data.results) {
+      const pct = Math.min(r.score * 100, 100);
+      const tags = r.tags && r.tags.length ? r.tags.join(', ') : '';
+      html += `
+        <div class="result-item">
+          <div class="title">${esc(r.title)} <span class="type-tag">${esc(r.doc_type)}</span></div>
+          <div class="meta">
+            <span style="display:inline-flex;align-items:center;gap:4px;">
+              <span class="score-bar" style="width:${pct * 1.5}px"></span>
+              ${(r.score * 100).toFixed(1)}%
+            </span>
+            ${tags ? ' | ' + esc(tags) : ''}
+            <span style="float:right;">${r.created_at || ''}</span>
+          </div>
+          <div class="summary">${esc(r.summary || '').slice(0, 200)}</div>
+        </div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">请求失败: ${e.message}</div>`;
+  }
+}
+
+// ── Browse ──
+let browsePage = 0;
+const PAGE_SIZE = 20;
+
+async function loadBrowse() {
+  const docType = document.getElementById('browseType').value;
+  const el = document.getElementById('browseResults');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+
+  try {
+    const params = new URLSearchParams({ offset: browsePage * PAGE_SIZE, limit: PAGE_SIZE });
+    if (docType) params.set('doc_type', docType);
+    const res = await fetch(`${API}/api/v1/items?${params}`);
+    const data = await res.json();
+    if (!data.items || data.items.length === 0) {
+      el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无数据</div>';
+      return;
+    }
+    let html = `<div class="text-muted mb-8">共 ${data.total} 条，显示第 ${browsePage * PAGE_SIZE + 1}-${browsePage * PAGE_SIZE + data.items.length} 条</div>`;
+    html += '<table class="data-table"><thead><tr><th>标题</th><th>类型</th><th>标签</th><th>时间</th></tr></thead><tbody>';
+    for (const item of data.items) {
+      const tags = item.tags && item.tags.length ? item.tags.join(', ') : '-';
+      html += `<tr><td><strong>${esc(item.title)}</strong><br><span class="text-muted" style="font-size:11px;">${item.id}</span></td><td>${esc(item.doc_type)}</td><td class="text-muted">${esc(tags)}</td><td class="text-muted">${item.created_at || '-'}</td></tr>`;
+    }
+    html += '</tbody></table>';
+
+    // Pagination
+    const totalPages = Math.ceil(data.total / PAGE_SIZE);
+    html += '<div class="pagination">';
+    if (browsePage > 0) html += `<button class="page-btn" onclick="browsePage=${browsePage-1};loadBrowse()">← 上一页</button>`;
+    for (let i = Math.max(0, browsePage-2); i <= Math.min(totalPages-1, browsePage+2); i++) {
+      html += `<button class="page-btn ${i === browsePage ? 'active' : ''}" onclick="browsePage=${i};loadBrowse()">${i+1}</button>`;
+    }
+    if (browsePage < totalPages - 1) html += `<button class="page-btn" onclick="browsePage=${browsePage+1};loadBrowse()">下一页 →</button>`;
+    html += '</div>';
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
+  }
+}
+
+// ── Add ──
+async function doAdd() {
+  const title = document.getElementById('addTitle').value.trim();
+  if (!title) { toast('标题不能为空', true); return; }
+  const docType = document.getElementById('addType').value;
+  const content = document.getElementById('addContent').value.trim();
+  const tagsRaw = document.getElementById('addTags').value.trim();
+  const tags = tagsRaw ? tagsRaw.split(/[,，]/).map(t => t.trim()).filter(t => t) : [];
+  let metadata = {};
+  const metaRaw = document.getElementById('addMetadata').value.trim();
+  if (metaRaw) {
+    try { metadata = JSON.parse(metaRaw); }
+    catch(e) { toast('metadata JSON 格式错误', true); return; }
+  }
+
+  try {
+    const res = await fetch(`${API}/api/v1/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, doc_type: docType, content, tags, metadata }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toast(`已添加: ${data.title} (${data.id})`);
+      document.getElementById('addTitle').value = '';
+      document.getElementById('addContent').value = '';
+      document.getElementById('addTags').value = '';
+      document.getElementById('addMetadata').value = '';
+    } else {
+      toast(data.detail || '添加失败', true);
+    }
+  } catch (e) {
+    toast(`请求失败: ${e.message}`, true);
+  }
+}
+
+// ── Stats ──
+async function loadStats() {
+  const el = document.getElementById('statsContent');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  try {
+    const res = await fetch(`${API}/api/v1/stats`);
+    const data = await res.json();
+    let html = `<div class="stat-card"><div class="stat-num">${data.total}</div><div class="text-muted">总条目数</div></div>`;
+    if (data.by_type) {
+      const maxCount = Math.max(...Object.values(data.by_type), 1);
+      for (const [dt, count] of Object.entries(data.by_type)) {
+        const pct = (count / maxCount * 100).toFixed(0);
+        html += `<div class="stat-row"><span style="width:100px;">${esc(dt)}</span><span style="width:40px;">${count}</span><div class="stat-bar" style="width:${pct * 2}px;background:var(--accent);"></div></div>`;
+      }
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
+  }
+}
+
+// ── Load total count in header ──
+async function loadTotal() {
+  try {
+    const res = await fetch(`${API}/api/v1/stats`);
+    const data = await res.json();
+    document.getElementById('totalCount').textContent = `${data.total} 条`;
+  } catch(_) {}
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+loadTotal();
+</script>
+</body>
+</html>
