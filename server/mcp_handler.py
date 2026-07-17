@@ -424,11 +424,77 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
 
 async def async_handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
     """异步 MCP 工具处理函数"""
-    # 与同步版本相同，但图谱搜索改用 await
+    # 图谱工具用 async
     if name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
         return await _async_graph_tool(name, args, engine, lightrag_engine)
-    # 其他工具直接走同步版
+    # 写入工具用 async_insert（避免在 async 上下文调用 asyncio.run()）
+    if name == "kb_add":
+        return await _async_add(args, engine, lightrag_engine)
+    if name == "kb_add_batch":
+        return await _async_add_batch(args, engine, lightrag_engine)
+    # 其他工具直接走同步版（纯读取，不涉及 asyncio.run）
     return handle_tool(name, args, engine, lightrag_engine)
+
+
+async def _async_add(args: dict, engine, lightrag_engine) -> dict:
+    """异步添加单条（用 async_insert 避免 asyncio.run 崩溃）"""
+    try:
+        item = _make_item(args)
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"❌ {e}"}]}
+    item.id = item.gen_id()
+    engine.add(item)
+    if lightrag_engine.is_available():
+        await lightrag_engine.async_insert([item.get_embedding_text()], ids=[item.id])
+    return {
+        "content": [{
+            "type": "text",
+            "text": (
+                f"✅ 条目已添加\n\n"
+                f"{_format_item_table(item.to_dict())}"
+                f"\n可用 kb_get 传入 ID `{item.id}` 查看详情"
+            ),
+        }]
+    }
+
+
+async def _async_add_batch(args: dict, engine, lightrag_engine) -> dict:
+    """异步批量添加（用 async_insert 避免 asyncio.run 崩溃）"""
+    raw_items = args.get("items", [])
+    if not isinstance(raw_items, list) or not raw_items:
+        return {"content": [{"type": "text", "text": "❌ items 必须是数组"}]}
+    added = []
+    errors = []
+    for i, c in enumerate(raw_items):
+        try:
+            if not isinstance(c, dict):
+                errors.append(f"第 {i+1} 条：参数格式错误")
+                continue
+            item = _make_item(c)
+            item.id = item.gen_id()
+            engine.add(item)
+            added.append(item)
+        except ValueError as e:
+            errors.append(f"第 {i+1} 条：{e}")
+    if added and lightrag_engine.is_available():
+        texts = [it.get_embedding_text() for it in added]
+        ids = [it.id for it in added]
+        await lightrag_engine.async_insert(texts, ids=ids)
+
+    summary = f"✅ 成功添加 {len(added)} 条"
+    if errors:
+        summary += f"，{len(errors)} 条失败:\n" + "\n".join(errors)
+    if added:
+        types = Counter(it.doc_type for it in added)
+        summary += "\n\n**按类型分布:**\n"
+        for dt, count in types.most_common():
+            summary += f"- {dt}: {count} 条\n"
+        summary += "\n**新增条目 ID:**\n"
+        for it in added[:10]:
+            summary += f"- `{it.id}` — {it.title}\n"
+        if len(added) > 10:
+            summary += f"  ... 还有 {len(added) - 10} 条\n"
+    return {"content": [{"type": "text", "text": summary}]}
 
 
 async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> dict:

@@ -324,7 +324,8 @@ async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
+        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
+                         "kb_add", "kb_add_batch"):
             result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
         else:
             result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
@@ -372,7 +373,8 @@ async def mcp_direct(msg: MCPMessage):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
+        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
+                         "kb_add", "kb_add_batch"):
             result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
         else:
             result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
