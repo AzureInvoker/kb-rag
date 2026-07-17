@@ -251,7 +251,8 @@
 <div id="toast" class="toast"></div>
 
 <script>
-const API = '/kb';
+// API 路径前缀。直接部署（无 nginx 子路径）留空；nginx 反代到子路径时改为对应路径，如 '/kb'
+const API = '';
 
 // ── Tab switching ──
 function switchTab(name) {
