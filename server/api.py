@@ -10,7 +10,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -228,7 +228,7 @@ async def graph_data():
     return result
 
 
-# ── MCP SSE 端点 ──
+# ── MCP 端点 ──
 
 _mcp_sessions: dict[str, asyncio.Queue] = {}
 _next_session_id = 0
@@ -246,34 +246,140 @@ async def mcp_sse(request: Request):
     async def event_generator():
         try:
             # 发送 endpoint 信息
-            yield f"event: endpoint\ndata: /mcp/message?session_id={session_id}\n\n"
-            # 发送初始工具列表
-            tools_msg = json.dumps({
+            base = str(request.base_url).rstrip("/")
+            yield f"event: endpoint\ndata: {base}/mcp/message?session_id={session_id}\n\n"
+            # 发 initialized 通知
+            init_msg = json.dumps({
                 "jsonrpc": "2.0",
-                "method": "tools/list",
-                "params": {},
-                "id": 0,
+                "method": "notifications/initialized",
             })
-            yield f"data: {tools_msg}\n\n"
+            yield f"event: message\ndata: {init_msg}\n\n"
             while True:
                 try:
                     response = await asyncio.wait_for(queue.get(), timeout=300)
-                    yield f"data: {response}\n\n"
+                    yield f"event: message\ndata: {response}\n\n"
                 except asyncio.TimeoutError:
-                    yield f"data: {json.dumps({'jsonrpc': '2.0', 'method': 'ping'})}\n\n"
+                    yield f": keepalive\n\n"
         except asyncio.CancelledError:
             pass
         finally:
             _mcp_sessions.pop(session_id, None)
 
-    return HTMLResponse(
-        content="",  # 会被 StreamingResponse 覆盖
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
         headers={
-            "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/mcp/info")
+def mcp_info():
+    """MCP 服务信息"""
+    cfg = app.state.cfg
+    return {
+        "name": "kb-rag-mcp",
+        "version": "1.0.0",
+        "transport": "HTTP + SSE",
+        "endpoints": {"sse": "/mcp/sse", "message": "/mcp/message", "direct": "POST /mcp"},
+        "tools": [t["name"] for t in TOOLS],
+    }
+
+
+class MCPMessage(BaseModel):
+    jsonrpc: str = "2.0"
+    id: int | None = None
+    method: str | None = None
+    params: dict = {}
+
+
+@app.post("/mcp/message")
+async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query("")):
+    """MCP 消息端点（SSE 客户端发消息）"""
+    msg_id = msg.id
+    method = msg.method
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0", "id": msg_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "kb-rag-mcp", "version": "1.0.0"},
+            },
+        }
+    if method in ("notifications/initialized",):
+        return {"jsonrpc": "2.0"}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+    if method == "tools/call":
+        tool_name = msg.params.get("name", "")
+        tool_args = msg.params.get("arguments", {})
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+
+        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
+            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+        else:
+            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+
+        resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+        # 如果有 SSE session，通过 SSE 推回
+        if session_id and session_id in _mcp_sessions:
+            await _mcp_sessions[session_id].put(json.dumps(resp))
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"_delivered": "sse"}}
+
+        return resp
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"不支持的方法: {method}"}}
+
+
+@app.post("/mcp")
+async def mcp_direct(msg: MCPMessage):
+    """MCP 直连端点（直接 POST JSON-RPC，无需 SSE）"""
+    msg_id = msg.id
+    method = msg.method
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0", "id": msg_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "kb-rag-mcp", "version": "1.0.0"},
+            },
+        }
+    if method in ("notifications/initialized",):
+        return {"jsonrpc": "2.0"}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+    if method == "tools/call":
+        tool_name = msg.params.get("name", "")
+        tool_args = msg.params.get("arguments", {})
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+
+        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
+            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+        else:
+            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+
+        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"不支持的方法: {method}"}}
 
 
 # ── 前端 ──
