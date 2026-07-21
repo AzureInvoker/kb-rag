@@ -12,11 +12,11 @@ case "${1:-help}" in
         sleep 1
       fi
     fi
-    nohup uv run uvicorn server.api:app --host 0.0.0.0 --port 8766 > /tmp/kb-rag.log 2>&1 &
+    nohup uv run uvicorn server.api:app --host 0.0.0.0 --port 8767 > /tmp/kb-rag.log 2>&1 &
     PID=$!
     echo "$PID" > /tmp/kb-rag.pid
     for i in $(seq 1 15); do
-      if curl -s http://localhost:8766/api/v1/health > /dev/null 2>&1; then
+      if curl -s http://localhost:8767/api/v1/health > /dev/null 2>&1; then
         echo "✅ 启动成功！（PID: $PID，耗时 ${i}s）"
         exit 0
       fi

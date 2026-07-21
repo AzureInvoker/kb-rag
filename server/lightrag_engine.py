@@ -343,7 +343,7 @@ class LightRAGEngine:
             async def _fetch_status():
                 try:
                     status = await self._rag.get_processing_status()
-                    graph = await self._rag.get_knowledge_graph("")
+                    graph = await self._rag.get_knowledge_graph("*")
                     return status, graph
                 except Exception as e:
                     return None, {"error": str(e)}
@@ -386,7 +386,7 @@ class LightRAGEngine:
         if not self._ready:
             return {"ok": False, "message": self._error or "存储初始化失败", "nodes": [], "edges": []}
         try:
-            graph = await self._rag.get_knowledge_graph("")
+            graph = await self._rag.get_knowledge_graph("*")
             nodes = []
             edges = []
             if graph and isinstance(graph, dict):
