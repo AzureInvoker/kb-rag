@@ -1,9 +1,17 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 
+# 从 config.yaml 读取端口
+KB_PORT=$(python3 -c "
+import yaml
+with open('config.yaml') as f:
+    cfg = yaml.safe_load(f)
+print(cfg.get('api', {}).get('port', 8766))
+" 2>/dev/null || echo 8766)
+
 case "${1:-help}" in
   start)
-    echo "🚀 启动 KB-RAG API..."
+    echo "🚀 启动 KB-RAG API... (port=$KB_PORT)"
     if [ -f /tmp/kb-rag.pid ]; then
       OLD_PID=$(cat /tmp/kb-rag.pid)
       if kill -0 "$OLD_PID" 2>/dev/null; then
@@ -12,11 +20,11 @@ case "${1:-help}" in
         sleep 1
       fi
     fi
-    nohup uv run uvicorn server.api:app --host 0.0.0.0 --port 8767 > /tmp/kb-rag.log 2>&1 &
+    nohup uv run uvicorn server.api:app --host 0.0.0.0 --port $KB_PORT > /tmp/kb-rag.log 2>&1 &
     PID=$!
     echo "$PID" > /tmp/kb-rag.pid
     for i in $(seq 1 15); do
-      if curl -s http://localhost:8767/api/v1/health > /dev/null 2>&1; then
+      if curl -s http://localhost:$KB_PORT/api/v1/health > /dev/null 2>&1; then
         echo "✅ 启动成功！（PID: $PID，耗时 ${i}s）"
         exit 0
       fi
