@@ -205,6 +205,65 @@ TOOLS = [
         "description": "诊断 LightRAG 知识图谱状态：是否启用、是否已建图、实体数量、LLM 提供商、处理状态等。\n【使用场景】① kb_graph_search 无结果时先调此工具诊断 ② 确认图谱就绪后再做图谱检索 ③ 建图过程中查看处理进度",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "mb_check",
+        "description": "【脑记忆】查询某条路径的经验记录。输入路径签名（target|method|source|params 四级，越完整越精确），返回该路径及上级路径的探索历史、平均爽感值和推荐策略。"
+            "用于 agent 在动手前先判断：这条路走过吗？结果是痛还是爽？应不应该再走一次？\n"
+            "【返回说明】\n"
+            "  - ✅ 推荐: avg_pleasure > 3，多次成功，放心走\n"
+            "  - ⚠️ 谨慎: avg_pleasure ≈ 0，有成功有失败，小心\n"
+            "  - ❌ 避开: avg_pleasure < -3，多次失败，换方案\n"
+            "  - 🔄 换方法: 目标下有痛的方法但有别的路子没试\n"
+            "  - 🆕 没试过: 无记录，放心探索",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pathsig": {"type": "string", "description": "路径签名。格式 'target|method|source|params'。越完整越精确。"
+                    " 也可以只有 target（查这个目标整体经验）。\n"
+                    "  示例: '查天气|web_search|baidu' 或 '查天气|工具调用' 或 '查天气'"},
+            },
+            "required": ["pathsig"],
+        },
+    },
+    {
+        "name": "mb_remember",
+        "description": "【脑记忆】记录一条路径探索经验。告诉 agent 这条路走完后的感受和结果。\n"
+            "【爽感值规则】\n"
+            "  - 正值: 顺利、高效、得到想要的结果（+1~+10）\n"
+            "  - 负值: 失败、踩坑、浪费 token（-1~-10）\n"
+            "  - 绝对值越大越强烈\n"
+            "【注意】已有路径会自动累计：tries+1、更新 avg_pleasure、更新 min/max、\n"
+            "  成功次数/失败次数+1、可靠性 = 成功/总次数",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "目标（必填），如 '查天气'、'搜公司官网'、'写测试用例'"},
+                "method": {"type": "string", "description": "方法（推荐），如 'web_search'、'tool_call'、'文件读取'"},
+                "source": {"type": "string", "description": "工具/来源（可选），如 'baidu'、'bing'、'curl'"},
+                "params": {"type": "string", "description": "参数/配置（可选），如 'lang=zh'、'timeout=30'"},
+                "pleasure": {"type": "number", "description": "爽感值（必填），-10 ~ +10"},
+                "note": {"type": "string", "description": "经验描述（必填），记录当时发生了什么、为什么爽/痛"},
+            },
+            "required": ["target", "pleasure", "note"],
+        },
+    },
+    {
+        "name": "mb_avoid",
+        "description": "【脑记忆】标记某条路径为疼痛路径。等价于 mb_remember + pleasure=-8，快捷方式。\n"
+            "用于 agent 明确知道这条路不该再走时快速标记。\n"
+            "【注意】如果只是普通失败请用 mb_remember，mb_avoid 默认给强力负分。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "目标（必填）"},
+                "method": {"type": "string", "description": "方法（推荐）"},
+                "source": {"type": "string", "description": "工具/来源（可选）"},
+                "params": {"type": "string", "description": "参数/配置（可选）"},
+                "reason": {"type": "string", "description": "避开原因（必填）"},
+            },
+            "required": ["target", "reason"],
+        },
+    },
 ]
 
 
@@ -412,8 +471,218 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         if status.get("processing_status"):
             text += f"| 处理状态 | {status['processing_status']} |\n"
         if status.get("message"):
-            text += f"| 消息 | {status['message']} |\n"
+            text += f"| 消息 | {status['message']} |\\n"
         return {"content": [{"type": "text", "text": text.strip()}]}
+
+    # ── 脑记忆: mb_check ──
+    elif name == "mb_check":
+        pathsig = args.get("pathsig", "").strip()
+        if not pathsig:
+            return {"content": [{"type": "text", "text": "请提供路径签名（pathsig）"}]}
+        parts = pathsig.split("|")
+        target = parts[0].strip()
+
+        # 查询所有匹配的 brain_memory（先精确查，再模糊）
+        def _build_sig(t, m, s, p):
+            sig = t
+            if m: sig += f"|{m}"
+            if s: sig += f"|{s}"
+            if p: sig += f"|{p}"
+            return sig
+
+        # 尝试精确搜索
+        exact_sig = pathsig
+        exact_results = engine.search(query=pathsig, n_results=10, doc_type="brain_memory")
+        # 也搜 target 级别的
+        target_results = engine.search(query=target, n_results=20, doc_type="brain_memory")
+
+        # 合并去重
+        seen = set()
+        all_matches = []
+        for r in exact_results + target_results:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                all_matches.append(r)
+
+        if not all_matches:
+            return {"content": [{"type": "text", "text": f"🆕 **没试过**: 「{pathsig}」无探索记录\n\n放心尝试，或先在 mc_remember 中搜索是否有相近经验"}]}
+
+        # 按 pathsig 分类聚合
+        from collections import defaultdict
+        by_pathsig = defaultdict(list)
+        for r in all_matches:
+            title = r.get("title", "")
+            by_pathsig[title].append(r)
+
+        text = f"## 🧠 脑记忆查询: {pathsig}\n\n"
+        text += f"共找到 {len(all_matches)} 条相关记录\n\n"
+
+        # 计算整体统计数据
+        total_pleasure = 0
+        pain_count = 0
+        success_count = 0
+        for r in all_matches:
+            meta = r.get("metadata", {}) if isinstance(r.get("metadata"), dict) else {}
+            p = meta.get("last_pleasure") or meta.get("pleasure", 0)
+            total_pleasure += p
+            if p < 0:
+                pain_count += 1
+            else:
+                success_count += 1
+        avg_p = total_pleasure / len(all_matches) if all_matches else 0
+
+        # 推荐策略
+        if avg_p > 3 and success_count >= pain_count:
+            recommendation = "✅ **推荐** — 这条路基本通畅，放心走"
+        elif avg_p > 0:
+            recommendation = "⚡ **还行** — 总体偏正面，可以试试"
+        elif avg_p > -3:
+            recommendation = "⚠️ **谨慎** — 有成功也有失败，建议先查详细记录"
+        else:
+            recommendation = "❌ **避开** — 这条路普遍痛，建议换方案"
+
+        # 查一下目标下有没有其他方法没试过
+        has_other_methods = False
+        for r in all_matches:
+            title = r.get("title", "")
+            if title.startswith(target + "|") and title != pathsig:
+                has_other_methods = True
+                break
+        if pain_count > success_count and has_other_methods:
+            recommendation += "\\n🔄 **换方法** — 当前路径痛，但目标下有其他路子没试"
+
+        text += f"**推荐**: {recommendation}\n\n"
+        text += f"**整体统计**: 总记录 {len(all_matches)} 条 | 平均爽感 {avg_p:.1f} | 😊 {success_count}  | 😣 {pain_count}\n\n"
+        text += "### 📋 详细记录\\n\\n"
+
+        for title in sorted(by_pathsig.keys()):
+            records = by_pathsig[title]
+            r = records[-1]  # 取最新一条
+            meta = r.get("metadata", {}) if isinstance(r.get("metadata"), dict) else {}
+            ap = meta.get("avg_pleasure") or meta.get("pleasure", 0)
+            tr = meta.get("tries", 1)
+            text += f"**{title}**"
+            if ap > 0:
+                text += " 😊"
+            elif ap < 0:
+                text += " 😣"
+            text += f" | 爽感 {ap:.1f} | 尝试 {tr} 次\n"
+            note = r.get("content", "")[:200]
+            if note:
+                text += f"> {note}\n"
+            text += "\\n"
+        return {"content": [{"type": "text", "text": text.strip()}]}
+
+    # ── 脑记忆: mb_remember ──
+    elif name == "mb_remember":
+        target = _clean_text(args.get("target", ""))
+        if not target:
+            return {"content": [{"type": "text", "text": "❌ target（目标）不能为空"}]}
+        method = _clean_text(args.get("method", ""))
+        source = _clean_text(args.get("source", ""))
+        params = _clean_text(args.get("params", ""))
+        try:
+            pleasure = int(args.get("pleasure", 0))
+        except (ValueError, TypeError):
+            pleasure = 0
+        pleasure = max(-10, min(10, pleasure))
+        note = _clean_text(args.get("note", ""))
+
+        # 构建路径签名作为 title
+        sig_parts = [target]
+        if method: sig_parts.append(method)
+        if source: sig_parts.append(source)
+        if params: sig_parts.append(params)
+        pathsig = " | ".join(sig_parts)
+
+        # 查有没有已有记录
+        existing = engine.search(query=pathsig, n_results=5, doc_type="brain_memory")
+        existing_record = None
+        for r in existing:
+            if r.get("title", "").strip() == pathsig:
+                existing_record = r
+                break
+
+        if existing_record:
+            # 更新已有记录
+            meta = existing_record.get("metadata", {})
+            if not isinstance(meta, dict):
+                meta = {}
+            old_tries = meta.get("tries", 1)
+            old_avg = meta.get("avg_pleasure", pleasure)
+            old_min = meta.get("min_pleasure", pleasure)
+            old_max = meta.get("max_pleasure", pleasure)
+            old_success = meta.get("success_count", 0)
+            old_fail = meta.get("fail_count", 0)
+
+            new_tries = old_tries + 1
+            new_avg = round((old_avg * old_tries + pleasure) / new_tries, 2)
+            new_min = min(old_min, pleasure)
+            new_max = max(old_max, pleasure)
+
+            # 更新 metadata（ChromaDB update 是整体替换！）
+            meta.update({
+                "pleasure": pleasure,
+                "last_pleasure": pleasure,
+                "tries": new_tries,
+                "avg_pleasure": new_avg,
+                "min_pleasure": new_min,
+                "max_pleasure": new_max,
+                "success_count": old_success + (1 if pleasure >= 0 else 0),
+                "fail_count": old_fail + (1 if pleasure < 0 else 0),
+                "reliability": round((old_success + (1 if pleasure >= 0 else 0)) / new_tries, 2),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            engine.collection.update(
+                ids=[existing_record["id"]],
+                metadatas=[meta],
+                documents=[f"{note}\n\n---\n{existing_record.get('content', '')}"[:2000]],
+            )
+            return {"content": [{"type": "text", "text": (
+                f"✅ 经验已更新: 「{pathsig}」\n"
+                f"最新爽感: {pleasure:+d} | 累计探索 {new_tries} 次 | 平均爽感 {new_avg:.1f} | 可靠性 {meta.get('reliability', 0):.0%}"
+            )}]}
+        else:
+            # 新建记录
+            item = KnowledgeItem(
+                title=pathsig,
+                doc_type="brain_memory",
+                content=note,
+                metadata={
+                    "target": target,
+                    "method": method,
+                    "source": source,
+                    "params": params,
+                    "pleasure": pleasure,
+                    "last_pleasure": pleasure,
+                    "tries": 1,
+                    "avg_pleasure": float(pleasure),
+                    "min_pleasure": pleasure,
+                    "max_pleasure": pleasure,
+                    "success_count": 1 if pleasure >= 0 else 0,
+                    "fail_count": 1 if pleasure < 0 else 0,
+                    "reliability": 1.0 if pleasure >= 0 else 0.0,
+                },
+                tags=[target, method] if method else [target],
+                created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            item.id = item.gen_id()
+            engine.add(item)
+            return {"content": [{"type": "text", "text": (
+                f"✅ 经验已记录: 「{pathsig}」\\n"
+                f"爽感: {pleasure:+d} | 首次探索"
+            )}]}
+
+    # ── 脑记忆: mb_avoid ──
+    elif name == "mb_avoid":
+        # mb_avoid 内部调用 mb_remember 的逻辑，但 pleasure=-8
+        args["pleasure"] = -8
+        note_parts = ["🚫 标记为疼痛路径"]
+        reason = _clean_text(args.get("reason", ""))
+        if reason:
+            note_parts.append(f"原因: {reason}")
+        args["note"] = " | ".join(note_parts)
+        return handle_tool("mb_remember", args, engine, lightrag_engine)
 
     else:
         return {"content": [{"type": "text", "text": f"未知工具: {name}"}]}
