@@ -361,9 +361,10 @@ class LightRAGEngine:
                 status_info, graph = asyncio.run(_fetch_status())
 
             node_count = 0
-            if graph and isinstance(graph, dict):
+            if graph:
                 try:
-                    node_count = len(graph.get("nodes", []))
+                    kg_nodes = getattr(graph, "nodes", None) or (graph.get("nodes") if isinstance(graph, dict) else [])
+                    node_count = len(kg_nodes) if kg_nodes else 0
                 except Exception:
                     pass
             return {
@@ -389,20 +390,31 @@ class LightRAGEngine:
             graph = await self._rag.get_knowledge_graph("*")
             nodes = []
             edges = []
-            if graph and isinstance(graph, dict):
-                for n in graph.get("nodes", []):
+            if graph:
+                # KnowledgeGraph 是 Pydantic 模型，不是 dict
+                kg_nodes = getattr(graph, "nodes", None) or (graph.get("nodes") if isinstance(graph, dict) else [])
+                kg_edges = getattr(graph, "edges", None) or (graph.get("edges") if isinstance(graph, dict) else [])
+                for n in (kg_nodes or []):
+                    n_id = n.id if not isinstance(n, dict) else n.get("id", "")
+                    n_labels = n.labels if not isinstance(n, dict) else n.get("labels", [])
+                    n_props = n.properties if not isinstance(n, dict) else n.get("properties", {})
                     nodes.append({
-                        "id": n.get("id", ""),
-                        "name": n.get("name", n.get("id", "")),
-                        "type": n.get("type", n.get("entity_type", "entity")),
-                        "description": n.get("description", "")[:200],
+                        "id": n_id,
+                        "name": n_id,
+                        "type": n_labels[0] if n_labels else "entity",
+                        "description": (n_props.get("description", "") or "")[:200],
                     })
-                for e in graph.get("edges", []):
+                for e in (kg_edges or []):
+                    e_id = e.id if not isinstance(e, dict) else e.get("id", "")
+                    e_type = e.type if not isinstance(e, dict) else e.get("type", "")
+                    e_source = e.source if not isinstance(e, dict) else e.get("source", "")
+                    e_target = e.target if not isinstance(e, dict) else e.get("target", "")
+                    e_props = e.properties if not isinstance(e, dict) else e.get("properties", {})
                     edges.append({
-                        "source": e.get("source", e.get("src_id", "")),
-                        "target": e.get("target", e.get("tgt_id", "")),
-                        "label": e.get("label", e.get("description", "")),
-                        "weight": e.get("weight", 1),
+                        "source": e_source,
+                        "target": e_target,
+                        "label": e_type or e_props.get("description", ""),
+                        "weight": e_props.get("weight", 1),
                     })
             return {"ok": True, "nodes": nodes, "edges": edges}
         except Exception as e:
