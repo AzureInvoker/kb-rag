@@ -189,13 +189,14 @@ TOOLS = [
     },
     {
         "name": "kb_agentic_search",
-        "description": "【推荐】自适应检索——自动融合向量搜索 + 知识图谱增强。先走 ChromaDB 做语义匹配，再调用 LightRAG 图谱补充实体关系。\n【适用场景】① 复杂问题不确定怎么精确表达关键词 ② 需要同时看语义匹配和相关实体关系 ③ kb_search 首轮不够理想时的深入检索\n【使用流程】先用 kb_search 试 → 结果不够好时换本工具看有没有图谱增强信息 → 想看纯推理用 kb_graph_search",
+        "description": "【推荐】自适应检索——自动融合向量搜索 + 知识图谱增强。先走 ChromaDB 做语义匹配，再调用 LightRAG 图谱补充实体关系。\n【适用场景】① 复杂问题不确定怎么精确表达关键词 ② 需要同时看语义匹配和相关实体关系 ③ kb_search 首轮不够理想时的深入检索\n【使用流程】先用 kb_search 试 → 结果不够好时换本工具看有没有图谱增强信息 → 想看纯推理用 kb_graph_search\n【内容控制】summary_only=true 只显示摘要（200 字符），false（默认）显示完整内容（最多 4000 字符/条）",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索关键词"},
                 "n_results": {"type": "number", "description": "返回结果数量（默认5，最多20）", "default": 5},
                 "doc_type": {"type": "string", "description": "按文档类型筛选"},
+                "summary_only": {"type": "boolean", "description": "只显示摘要（200 字符）而非完整内容，节省上下文", "default": False},
             },
             "required": ["query"],
         },
@@ -211,16 +212,19 @@ TOOLS = [
             "用于 agent 在动手前先判断：这条路走过吗？结果是痛还是爽？应不应该再走一次？\n"
             "【返回说明】\n"
             "  - ✅ 推荐: avg_pleasure > 3，多次成功，放心走\n"
-            "  - ⚠️ 谨慎: avg_pleasure ≈ 0，有成功有失败，小心\n"
+            "  - ⚡ 还行: avg_pleasure > 0，总体偏正面\n"
+            "  - ⚠️ 谨慎: avg_pleasure ≈ 0，有成功有失败\n"
             "  - ❌ 避开: avg_pleasure < -3，多次失败，换方案\n"
             "  - 🔄 换方法: 目标下有痛的方法但有别的路子没试\n"
-            "  - 🆕 没试过: 无记录，放心探索",
+            "  - 🆕 没试过: 无记录，放心探索\n"
+            "【格式】format=text（默认）返回人类可读文本；format=json 返回结构化 JSON 对象，便于程序化处理",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "pathsig": {"type": "string", "description": "路径签名。格式 'target|method|source|params'。越完整越精确。"
                     " 也可以只有 target（查这个目标整体经验）。\n"
                     "  示例: '查天气|web_search|baidu' 或 '查天气|工具调用' 或 '查天气'"},
+                "format": {"type": "string", "description": "输出格式。text（默认）= 人类可读文本；json = 结构化 JSON", "default": "text"},
             },
             "required": ["pathsig"],
         },
@@ -262,6 +266,20 @@ TOOLS = [
                 "reason": {"type": "string", "description": "避开原因（必填）"},
             },
             "required": ["target", "reason"],
+        },
+    },
+    {
+        "name": "mb_prune",
+        "description": "【脑记忆】清理和合并脑记忆记录。自动执行三项任务：\n"
+            "1. 去重：完全相同的 pathsig → 合并统计后保留一条（保留最新 updated_at）\n"
+            "2. 归档：avg_pleasure < -5 且超过 90 天未更新的 → 删除\n"
+            "3. 矛盾合并：同 target 下多条矛盾的记录 → 保留 tries 最高的那条\n"
+            "【注意】本工具会实际修改数据，建议先用 mb_check 确认状态后再调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "description": "设为 true 时只预览不实际删除（默认 true，安全的预览模式）", "default": True},
+            },
         },
     },
 ]
@@ -437,6 +455,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         if not query:
             return {"content": [{"type": "text", "text": "请提供搜索关键词"}]}
         n_results = min(int(args.get("n_results", 5)), 20)
+        summary_only = args.get("summary_only", False)
         chroma_results = engine.search(
             query=query,
             n_results=n_results,
@@ -446,7 +465,19 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         if chroma_results:
             text += f"### 📋 向量匹配结果（{len(chroma_results)} 条）\n\n"
             for r in chroma_results:
-                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n\n"
+                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n"
+                if summary_only:
+                    text += f"> 摘要: {r.get('summary', '')}\n\n"
+                else:
+                    # 获取完整内容（从 summary 已有 200 字符，想要完整内容需要单独拉）
+                    content = r.get("summary", "")
+                    # 尝试从 engine 获取完整内容
+                    full = engine.get_by_id(r["id"])
+                    if full and full.get("content"):
+                        content = full["content"]
+                    if len(content) > 4000:
+                        content = content[:4000] + "\n... [内容截断，超出 4000 字符]"
+                    text += f"> {content}\n\n"
         else:
             text += "无可用的向量搜索结果\n\n"
         if lightrag_engine.is_available():
@@ -476,104 +507,182 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
 
     # ── 脑记忆: mb_check ──
     elif name == "mb_check":
-        pathsig = args.get("pathsig", "").strip()
+        pathsig = _clean_text(args.get("pathsig", ""))
+        output_format = args.get("format", "text")
         if not pathsig:
             return {"content": [{"type": "text", "text": "请提供路径签名（pathsig）"}]}
         parts = pathsig.split("|")
         target = parts[0].strip()
 
-        # 查询所有匹配的 brain_memory（先精确查，再模糊）
-        def _build_sig(t, m, s, p):
-            sig = t
-            if m: sig += f"|{m}"
-            if s: sig += f"|{s}"
-            if p: sig += f"|{p}"
-            return sig
+        # 查询所有 brain_memory（精确匹配 + target 级别模糊匹配）
+        exact_results = engine.collection.get(
+            where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
+        )
+        target_results = engine.collection.get(
+            where={"$and": [{"doc_type": "brain_memory"}]}
+        )
 
-        # 尝试精确搜索
-        exact_sig = pathsig
-        exact_results = engine.search(query=pathsig, n_results=10, doc_type="brain_memory")
-        # 也搜 target 级别的
-        target_results = engine.search(query=target, n_results=20, doc_type="brain_memory")
-
-        # 合并去重
+        # 构建全部匹配列表
         seen = set()
-        all_matches = []
-        for r in exact_results + target_results:
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                all_matches.append(r)
+        all_results = []
 
-        if not all_matches:
-            return {"content": [{"type": "text", "text": f"🆕 **没试过**: 「{pathsig}」无探索记录\n\n放心尝试，或先在 mc_remember 中搜索是否有相近经验"}]}
+        def _fmt_exact(ids, metas, docs):
+            items = []
+            for i, eid in enumerate(ids):
+                m = metas[i] if metas else {}
+                doc = docs[i] if docs else ""
+                items.append({
+                    "id": eid,
+                    "title": m.get("title", ""),
+                    "pathsig": m.get("title", ""),
+                    "content": doc or "",
+                    "pleasure": m.get("pleasure", 0),
+                    "avg_pleasure": m.get("avg_pleasure", 0),
+                    "tries": m.get("tries", 1),
+                    "min_pleasure": m.get("min_pleasure", 0),
+                    "max_pleasure": m.get("max_pleasure", 0),
+                    "success_count": m.get("success_count", 0),
+                    "fail_count": m.get("fail_count", 0),
+                    "reliability": m.get("reliability", 0),
+                    "updated_at": m.get("updated_at", ""),
+                    "metadata": {
+                        "target": m.get("target", ""),
+                        "method": m.get("method", ""),
+                        "source": m.get("source", ""),
+                        "params": m.get("params", ""),
+                    },
+                })
+            return items
 
-        # 按 pathsig 分类聚合
-        from collections import defaultdict
-        by_pathsig = defaultdict(list)
-        for r in all_matches:
-            title = r.get("title", "")
-            by_pathsig[title].append(r)
+        # 精确匹配
+        if exact_results and exact_results["ids"]:
+            all_results.extend(_fmt_exact(
+                exact_results["ids"], exact_results["metadatas"], exact_results["documents"]
+            ))
+            seen.update(exact_results["ids"])
 
+        # target 前缀匹配（从全量中筛选 title 以 target 开头的）
+        if target_results and target_results["ids"]:
+            for i, eid in enumerate(target_results["ids"]):
+                if eid in seen:
+                    continue
+                m = target_results["metadatas"][i] if target_results["metadatas"] else {}
+                title = m.get("title", "")
+                if title.startswith(target):
+                    doc = target_results["documents"][i] if target_results["documents"] else ""
+                    all_results.append({
+                        "id": eid,
+                        "title": title,
+                        "pathsig": title,
+                        "content": doc or "",
+                        "pleasure": m.get("pleasure", 0),
+                        "avg_pleasure": m.get("avg_pleasure", 0),
+                        "tries": m.get("tries", 1),
+                        "min_pleasure": m.get("min_pleasure", 0),
+                        "max_pleasure": m.get("max_pleasure", 0),
+                        "success_count": m.get("success_count", 0),
+                        "fail_count": m.get("fail_count", 0),
+                        "reliability": m.get("reliability", 0),
+                        "updated_at": m.get("updated_at", ""),
+                        "metadata": {
+                            "target": m.get("target", ""),
+                            "method": m.get("method", ""),
+                            "source": m.get("source", ""),
+                            "params": m.get("params", ""),
+                        },
+                    })
+
+        if not all_results:
+            empty_result = {
+                "pathsig": pathsig,
+                "found": False,
+                "recommendation": "🆕 没试过",
+                "exact_hit": None,
+                "related_hits": [],
+                "stats": {"total_records": 0, "avg_pleasure": 0, "success_count": 0, "pain_count": 0},
+            }
+            if output_format == "json":
+                return {"content": [{"type": "text", "text": json.dumps(empty_result, ensure_ascii=False, indent=2)}]}
+            return {"content": [{"type": "text", "text": f"🆕 **没试过**: 「{pathsig}」无探索记录\n\n放心尝试，或先在 mb_check 中搜索是否有相近经验"}]}
+
+        # 计算推荐
+        exact_hit = next((r for r in all_results if r["pathsig"] == pathsig), None)
+        target_hits = [r for r in all_results if r["metadata"]["target"] == target]
+
+        total_pleasure = sum(r["pleasure"] for r in target_hits)
+        pain_count = sum(1 for r in target_hits if r["pleasure"] < 0)
+        success_count = sum(1 for r in target_hits if r["pleasure"] >= 0)
+        avg_p = total_pleasure / len(target_hits) if target_hits else 0
+
+        has_other_methods = any(
+            r["pathsig"].startswith(target + "|") and r["pathsig"] != pathsig
+            for r in all_results
+        )
+
+        if avg_p > 3 and success_count >= pain_count:
+            recommendation = "✅ 推荐"
+        elif avg_p > 0:
+            recommendation = "⚡ 还行"
+        elif avg_p > -3:
+            recommendation = "⚠️ 谨慎"
+        else:
+            recommendation = "❌ 避开"
+        if pain_count > success_count and has_other_methods:
+            recommendation += " 🔄 换方法"
+
+        if output_format == "json":
+            result = {
+                "pathsig": pathsig,
+                "found": True,
+                "recommendation": recommendation,
+                "exact_hit": exact_hit,
+                "related_hits": [r for r in all_results if r["pathsig"] != pathsig],
+                "stats": {
+                    "total_records": len(all_results),
+                    "target_total": len(target_hits),
+                    "avg_pleasure": round(avg_p, 2),
+                    "success_count": success_count,
+                    "pain_count": pain_count,
+                    "has_other_methods": has_other_methods,
+                },
+            }
+            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+
+        # ── text 格式输出（保持原有可读风格） ──
         text = f"## 🧠 脑记忆查询: {pathsig}\n\n"
-        text += f"共找到 {len(all_matches)} 条相关记录\n\n"
-
-        # 计算整体统计数据
-        total_pleasure = 0
-        pain_count = 0
-        success_count = 0
-        for r in all_matches:
-            meta = r.get("metadata", {}) if isinstance(r.get("metadata"), dict) else {}
-            p = meta.get("last_pleasure") or meta.get("pleasure", 0)
-            total_pleasure += p
-            if p < 0:
-                pain_count += 1
-            else:
-                success_count += 1
-        avg_p = total_pleasure / len(all_matches) if all_matches else 0
+        text += f"共找到 {len(all_results)} 条相关记录\n\n"
 
         # 推荐策略
-        if avg_p > 3 and success_count >= pain_count:
-            recommendation = "✅ **推荐** — 这条路基本通畅，放心走"
-        elif avg_p > 0:
-            recommendation = "⚡ **还行** — 总体偏正面，可以试试"
-        elif avg_p > -3:
-            recommendation = "⚠️ **谨慎** — 有成功也有失败，建议先查详细记录"
+        display_recommendation = recommendation.replace("✅", "✅ **").replace("⚡", "⚡ **").replace("⚠️", "⚠️ **").replace("❌", "❌ **")
+        if "换方法" in recommendation:
+            display_recommendation = display_recommendation.replace(" 🔄 换方法", "**\n🔄 **换方法** — 当前路径痛，但目标下有其他路子没试")
         else:
-            recommendation = "❌ **避开** — 这条路普遍痛，建议换方案"
+            display_recommendation += "**"
 
-        # 查一下目标下有没有其他方法没试过
-        has_other_methods = False
-        for r in all_matches:
-            title = r.get("title", "")
-            if title.startswith(target + "|") and title != pathsig:
-                has_other_methods = True
-                break
-        if pain_count > success_count and has_other_methods:
-            recommendation += "\\n🔄 **换方法** — 当前路径痛，但目标下有其他路子没试"
+        text += f"**推荐**: {display_recommendation}\n\n"
+        text += f"**整体统计**: 总记录 {len(target_hits)} 条 | 平均爽感 {avg_p:.1f} | 😊 {success_count}  | 😣 {pain_count}\n\n"
+        text += "### 📋 详细记录\n\n"
 
-        text += f"**推荐**: {recommendation}\n\n"
-        text += f"**整体统计**: 总记录 {len(all_matches)} 条 | 平均爽感 {avg_p:.1f} | 😊 {success_count}  | 😣 {pain_count}\n\n"
-        text += "### 📋 详细记录\\n\\n"
-
-        for title in sorted(by_pathsig.keys()):
-            records = by_pathsig[title]
-            r = records[-1]  # 取最新一条
-            meta = r.get("metadata", {}) if isinstance(r.get("metadata"), dict) else {}
-            ap = meta.get("avg_pleasure") or meta.get("pleasure", 0)
-            tr = meta.get("tries", 1)
-            text += f"**{title}**"
+        # 按 pathsig 排序展示
+        for r in sorted(all_results, key=lambda x: -x["tries"]):
+            ap = r["avg_pleasure"]
+            tr = r["tries"]
+            text += f"**{r['pathsig']}**"
             if ap > 0:
                 text += " 😊"
             elif ap < 0:
                 text += " 😣"
-            text += f" | 爽感 {ap:.1f} | 尝试 {tr} 次\n"
+            text += f" | 爽感 {ap:.1f} | 尝试 {tr} 次"
+            if r.get("updated_at"):
+                text += f" | 最后更新 {r['updated_at']}"
+            text += "\n"
             note = r.get("content", "")[:200]
             if note:
                 text += f"> {note}\n"
-            text += "\\n"
+            text += "\n"
         return {"content": [{"type": "text", "text": text.strip()}]}
 
-    # ── 脑记忆: mb_remember ──
+    # ── 脑记忆: mb_remember (upsert) ──
     elif name == "mb_remember":
         target = _clean_text(args.get("target", ""))
         if not target:
@@ -595,54 +704,70 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         if params: sig_parts.append(params)
         pathsig = " | ".join(sig_parts)
 
-        # 查有没有已有记录
-        existing = engine.search(query=pathsig, n_results=5, doc_type="brain_memory")
-        existing_record = None
-        for r in existing:
-            if r.get("title", "").strip() == pathsig:
-                existing_record = r
-                break
+        # 精确匹配 pathsig（用 ChromaDB 的 where 过滤，不用语义搜索）
+        exact_matches = engine.collection.get(
+            where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
+        )
+        existing_ids = exact_matches["ids"] if exact_matches and exact_matches["ids"] else []
 
-        if existing_record:
-            # 更新已有记录
-            meta = existing_record.get("metadata", {})
-            if not isinstance(meta, dict):
-                meta = {}
-            old_tries = meta.get("tries", 1)
-            old_avg = meta.get("avg_pleasure", pleasure)
-            old_min = meta.get("min_pleasure", pleasure)
-            old_max = meta.get("max_pleasure", pleasure)
-            old_success = meta.get("success_count", 0)
-            old_fail = meta.get("fail_count", 0)
+        if existing_ids:
+            # ── 有重复时合并：保留最新元数据，汇总 tries/success/fail ──
+            all_metas = []
+            for i, eid in enumerate(existing_ids):
+                em = exact_matches["metadatas"][i] if exact_matches["metadatas"] else {}
+                all_metas.append(em)
 
-            new_tries = old_tries + 1
-            new_avg = round((old_avg * old_tries + pleasure) / new_tries, 2)
-            new_min = min(old_min, pleasure)
-            new_max = max(old_max, pleasure)
+            # 合并统计
+            total_tries = sum(m.get("tries", 1) for m in all_metas)
+            total_success = sum(m.get("success_count", 0) for m in all_metas)
+            total_fail = sum(m.get("fail_count", 0) for m in all_metas)
+            all_avg_sum = sum(m.get("avg_pleasure", 0) * m.get("tries", 1) for m in all_metas)
+            overall_min = min(m.get("min_pleasure", pleasure) for m in all_metas)
+            overall_max = max(m.get("max_pleasure", pleasure) for m in all_metas)
 
-            # 更新 metadata（ChromaDB update 是整体替换！）
-            meta.update({
+            # 加上本次新值
+            new_tries = total_tries + 1
+            new_success = total_success + (1 if pleasure >= 0 else 0)
+            new_fail = total_fail + (1 if pleasure < 0 else 0)
+            new_avg = round((all_avg_sum + pleasure) / new_tries, 2)
+
+            merged_meta = {
+                "target": target,
+                "method": method,
+                "source": source,
+                "params": params,
                 "pleasure": pleasure,
                 "last_pleasure": pleasure,
                 "tries": new_tries,
                 "avg_pleasure": new_avg,
-                "min_pleasure": new_min,
-                "max_pleasure": new_max,
-                "success_count": old_success + (1 if pleasure >= 0 else 0),
-                "fail_count": old_fail + (1 if pleasure < 0 else 0),
-                "reliability": round((old_success + (1 if pleasure >= 0 else 0)) / new_tries, 2),
+                "min_pleasure": min(overall_min, pleasure),
+                "max_pleasure": max(overall_max, pleasure),
+                "success_count": new_success,
+                "fail_count": new_fail,
+                "reliability": round(new_success / new_tries, 2),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            }
+
+            # 删除重复记录（保留第一条，合并到它）
+            keep_id = existing_ids[0]
+            dup_ids = existing_ids[1:]
+            if dup_ids:
+                engine.collection.delete(ids=dup_ids)
+
+            # 更新笔记（新 note 覆盖旧 note）
             engine.collection.update(
-                ids=[existing_record["id"]],
-                metadatas=[meta],
+                ids=[keep_id],
+                documents=[note],
+                metadatas=[merged_meta],
             )
             return {"content": [{"type": "text", "text": (
                 f"✅ 经验已更新: 「{pathsig}」\n"
-                f"最新爽感: {pleasure:+d} | 累计探索 {new_tries} 次 | 平均爽感 {new_avg:.1f} | 可靠性 {meta.get('reliability', 0):.0%}"
+                f"最新爽感: {pleasure:+d} | 累计探索 {new_tries} 次 | 平均爽感 {new_avg:.1f} | 可靠性 {merged_meta.get('reliability', 0):.0%}"
+                + (f"\n🔄 合并了 {len(dup_ids)} 条重复记录" if dup_ids else "")
             )}]}
         else:
-            # 新建记录
+            # ── 新建记录 ──
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             item = KnowledgeItem(
                 title=pathsig,
                 doc_type="brain_memory",
@@ -661,14 +786,15 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
                     "success_count": 1 if pleasure >= 0 else 0,
                     "fail_count": 1 if pleasure < 0 else 0,
                     "reliability": 1.0 if pleasure >= 0 else 0.0,
+                    "updated_at": now,
                 },
                 tags=[target, method] if method else [target],
-                created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                created_at=now,
             )
             item.id = item.gen_id()
             engine.add(item)
             return {"content": [{"type": "text", "text": (
-                f"✅ 经验已记录: 「{pathsig}」\\n"
+                f"✅ 经验已记录: 「{pathsig}」\n"
                 f"爽感: {pleasure:+d} | 首次探索"
             )}]}
 
@@ -682,6 +808,92 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
             note_parts.append(f"原因: {reason}")
         args["note"] = " | ".join(note_parts)
         return handle_tool("mb_remember", args, engine, lightrag_engine)
+
+    # ── 脑记忆: mb_prune ──
+    elif name == "mb_prune":
+        dry_run = args.get("dry_run", True)
+
+        # 拉取所有 brain_memory
+        all_docs = engine.collection.get(
+            where={"doc_type": "brain_memory"}
+        )
+        if not all_docs or not all_docs["ids"]:
+            return {"content": [{"type": "text", "text": "🧹 无脑记忆记录需要清理"}]}
+
+        total_before = len(all_docs["ids"])
+
+        # 按 title(pathsig) 分组
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for i, eid in enumerate(all_docs["ids"]):
+            m = all_docs["metadatas"][i] if all_docs["metadatas"] else {}
+            doc = all_docs["documents"][i] if all_docs["documents"] else ""
+            groups[m.get("title", "unknown")].append({
+                "id": eid,
+                "meta": m,
+                "doc": doc,
+            })
+
+        now_ts = datetime.now()
+        to_delete = set()
+        merge_log = []
+
+        # 1. 去重：完全相同的 pathsig → 合并（保留 tries 最多的）
+        for title, records in groups.items():
+            if len(records) <= 1:
+                continue
+            best = max(records, key=lambda r: r["meta"].get("tries", 1))
+            for r in records:
+                if r["id"] != best["id"]:
+                    to_delete.add(r["id"])
+            merge_log.append(f"  「{title}」: 合并 {len(records)} 条 → 保留 `{best['id']}` (tries={best['meta'].get('tries', 1)})")
+
+        # 2. 归档：avg_pleasure < -5 且超过 90 天未更新
+        for title, records in groups.items():
+            for r in records:
+                if r["id"] in to_delete:
+                    continue
+                avg_p = r["meta"].get("avg_pleasure", 0)
+                if avg_p >= -5:
+                    continue
+                updated_at = r["meta"].get("updated_at", "")
+                if not updated_at:
+                    continue
+                try:
+                    updated_ts = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
+                    days_since = (now_ts - updated_ts).days
+                    if days_since >= 90:
+                        to_delete.add(r["id"])
+                        merge_log.append(f"  🗑️ 归档「{title}」: avg_pleasure={avg_p:.1f}，{days_since} 天未更新")
+                except ValueError:
+                    pass
+
+        total_to_delete = len(to_delete)
+
+        if dry_run:
+            msg = f"🧹 **mb_prune 预览**（dry_run=true，未实际删除）\n\n"
+            msg += f"清理前: **{total_before}** 条\n"
+            msg += f"将删除: **{total_to_delete}** 条\n"
+            msg += f"预计剩余: **{total_before - total_to_delete}** 条\n\n"
+            if merge_log:
+                msg += "**操作明细:**\n\n" + "\n".join(merge_log)
+            else:
+                msg += "无需要清理的记录 🎉"
+            return {"content": [{"type": "text", "text": msg}]}
+
+        # 实际执行删除
+        if to_delete:
+            engine.collection.delete(ids=list(to_delete))
+            msg = f"🧹 **mb_prune 已完成**\n\n"
+            msg += f"清理前: {total_before} 条\n"
+            msg += f"已删除: {total_to_delete} 条\n"
+            msg += f"当前剩余: {total_before - total_to_delete} 条\n\n"
+            if merge_log:
+                msg += "**操作明细:**\n\n" + "\n".join(merge_log)
+        else:
+            msg = "🧹 无需要清理的记录 🎉"
+
+        return {"content": [{"type": "text", "text": msg}]}
 
     else:
         return {"content": [{"type": "text", "text": f"未知工具: {name}"}]}
@@ -794,12 +1006,23 @@ async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> d
         if not query:
             return {"content": [{"type": "text", "text": "请提供搜索关键词"}]}
         n_results = min(int(args.get("n_results", 5)), 20)
+        summary_only = args.get("summary_only", False)
         chroma_results = engine.search(query=query, n_results=n_results, doc_type=args.get("doc_type"))
         text = f"## 🔍 自适应检索「{query}」\n\n"
         if chroma_results:
             text += f"### 📋 向量匹配结果（{len(chroma_results)} 条）\n\n"
             for r in chroma_results:
-                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n\n"
+                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n"
+                if summary_only:
+                    text += f"> 摘要: {r.get('summary', '')}\n\n"
+                else:
+                    content = r.get("summary", "")
+                    full = engine.get_by_id(r["id"])
+                    if full and full.get("content"):
+                        content = full["content"]
+                    if len(content) > 4000:
+                        content = content[:4000] + "\n... [内容截断，超出 4000 字符]"
+                    text += f"> {content}\n\n"
         else:
             text += "无可用的向量搜索结果\n\n"
         if lightrag_engine.is_available():
