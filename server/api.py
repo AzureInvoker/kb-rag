@@ -111,6 +111,9 @@ def search(
         n_results=n_results,
         doc_type=doc_type,
     )
+    # 默认不返回 brain_memory（只有主动筛选才看记忆）
+    if not doc_type:
+        results = [r for r in results if r.get("doc_type") != "brain_memory"]
     return {"query": query, "total": len(results), "results": results}
 
 
