@@ -449,6 +449,13 @@ class VectorEngine:
         all_docs = self.collection.get()
         return len(all_docs["ids"])
 
+    def count_by_type(self, doc_type: str = None) -> int:
+        """按文档类型统计条目数"""
+        if not doc_type:
+            return self.count()
+        all_docs = self.collection.get(where={"doc_type": doc_type})
+        return len(all_docs["ids"]) if all_docs and all_docs.get("ids") else 0
+
 
 # ── 单例 ──
 
