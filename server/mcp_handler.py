@@ -507,19 +507,22 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
 
     # ── 脑记忆: mb_check ──
     elif name == "mb_check":
-        pathsig = _clean_text(args.get("pathsig", ""))
+        raw_pathsig = _clean_text(args.get("pathsig", ""))
         output_format = args.get("format", "text")
-        if not pathsig:
+        if not raw_pathsig:
             return {"content": [{"type": "text", "text": "请提供路径签名（pathsig）"}]}
-        parts = pathsig.split("|")
-        target = parts[0].strip()
+        # 归一化：统一 "target|method" → "target | method"
+        norm_parts = [p.strip() for p in raw_pathsig.split("|")]
+        pathsig = " | ".join(norm_parts)
+        target = norm_parts[0]
 
-        # 查询所有 brain_memory（精确匹配 + target 级别模糊匹配）
+        # 查询所有 brain_memory（精确匹配 + target 级别前缀匹配）
         exact_results = engine.collection.get(
             where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
         )
+        # 全量 brain_memory（单条件不用 $and）
         target_results = engine.collection.get(
-            where={"$and": [{"doc_type": "brain_memory"}]}
+            where={"doc_type": "brain_memory"}
         )
 
         # 构建全部匹配列表
