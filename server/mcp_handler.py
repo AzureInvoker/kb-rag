@@ -636,7 +636,6 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
             engine.collection.update(
                 ids=[existing_record["id"]],
                 metadatas=[meta],
-                documents=[f"{note}\n\n---\n{existing_record.get('content', '')}"[:2000]],
             )
             return {"content": [{"type": "text", "text": (
                 f"✅ 经验已更新: 「{pathsig}」\n"
