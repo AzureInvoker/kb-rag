@@ -41,6 +41,12 @@ async def lifespan(app: FastAPI):
     app.state.lightrag = lightrag
     app.state.search_router = search_router
 
+    # 主动预热：加载嵌入模型 + ChromaDB（避免首次请求延迟）
+    logger.info("预热引擎中...")
+    _ = engine.collection
+    _ = engine.embedder
+    logger.info(f"引擎就绪 (model={cfg.embed_model})")
+
     logger.info(f"kb-rag 启动完成 (port={cfg.api_port}, lightrag={cfg.lightrag_enabled})")
     yield
 
