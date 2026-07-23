@@ -99,12 +99,13 @@ class VectorEngine:
     def reembed(self):
         """
         用当前模型重新嵌入所有已有数据（修复模型切换后的维度不匹配）。
-        自动备份旧库，安全可恢复。
+        自动备份旧库（带时间戳，不会覆写），安全可恢复。
         """
         import shutil
         from pathlib import Path
         import chromadb
         from sentence_transformers import SentenceTransformer
+        from datetime import datetime
 
         # 只加载模型（不连 ChromaDB，避免维度校验报错）
         logger.warning(f"加载嵌入模型: {EMBED_MODEL}")
@@ -112,23 +113,33 @@ class VectorEngine:
 
         logger.warning("⚠️  开始重新嵌入所有数据...")
 
+        # 第1步：读取旧数据（所有操作之前，确保数据到手）
         old_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         old_cols = old_client.list_collections()
         all_data = {}
+        total_items = 0
         for col in old_cols:
             all_data[col.name] = col.get(include=["documents", "metadatas"])
-            logger.info(f"  读取 collection '{col.name}': {col.count()} 条")
+            n = len(all_data[col.name]["ids"])
+            total_items += n
+            logger.info(f"  读取 collection '{col.name}': {n} 条")
 
-        backup_dir = f"{CHROMA_DIR}_reembed_bak"
+        if not all_data:
+            logger.warning("  无数据，无需重建")
+            return
+
+        # 第2步：带时间戳备份（永不覆写）
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = f"{CHROMA_DIR}_bak_{ts}"
         backup_p = Path(backup_dir)
-        if backup_p.exists():
-            shutil.rmtree(backup_p)
         shutil.copytree(str(CHROMA_DIR), str(backup_p))
         logger.info(f"  💾 备份: {backup_p}")
 
+        # 第3步：删除旧库
         shutil.rmtree(str(CHROMA_DIR))
         logger.info(f"  🗑️  旧库已删除")
 
+        # 第4步：用新模型重新嵌入并写入
         new_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         for col_name, data in all_data.items():
             docs = data.get("documents") or []
@@ -154,6 +165,9 @@ class VectorEngine:
         self._bm25_size = 0
         logger.info(f"  ✅ reembed 完成！备份在 {backup_p}")
         logger.info(f"  🔄 重启服务自动加载新库")
+
+        # 输出统计便于验证
+        logger.info(f"  共重建 {total_items} 条，模型维度 {embedder.get_sentence_embedding_dimension()}")
 
     @property
     def collection(self):
