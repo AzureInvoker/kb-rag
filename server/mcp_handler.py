@@ -758,9 +758,9 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
                 engine.collection.delete(ids=dup_ids)
 
             # 更新笔记（新 note 覆盖旧 note）
+            # 注意：不传 documents 避免触发 ChromaDB 重嵌入（降维不匹配问题）
             engine.collection.update(
                 ids=[keep_id],
-                documents=[note],
                 metadatas=[merged_meta],
             )
             return {"content": [{"type": "text", "text": (
