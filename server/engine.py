@@ -72,28 +72,30 @@ class VectorEngine:
     def _validate_dimension(self):
         """校验嵌入模型输出维度与 ChromaDB 存储的 embedding 维度一致"""
         try:
-            sample_emb = self._embedder.encode(["验证维度"]).tolist()
-            model_dim = len(sample_emb[0])
-
+            # 先看库有没有数据，没数据跳过校验（空库无所谓维度）
             existing = self._collection.get(limit=1, include=["embeddings"])
-            if existing["ids"] and existing.get("embeddings"):
-                stored_dim = len(existing["embeddings"][0])
-                if model_dim != stored_dim:
-                    msg = (
-                        f"\n{'='*60}\n"
-                        f"❌ 嵌入模型维度不匹配！\n"
-                        f"   模型 {self._embed_model}: {model_dim} 维\n"
-                        f"   库 {self._collection_name}:   {stored_dim} 维\n\n"
-                        f"   原因：ChromaDB 是用另一个模型建的，改模型后没重建。\n\n"
-                        f"   修复命令：\n"
-                        f"     uv run python -c \"from server.engine import get_engine; "
-                        f"e = get_engine(); e.reembed()\"\n"
-                        f"{'='*60}"
-                    )
-                    logger.error(msg)
-                    raise ValueError(msg)
-                else:
-                    logger.info(f"✅ 维度校验通过: 模型={model_dim}d, 库={stored_dim}d")
+            if not existing.get("ids"):
+                logger.info("  库为空，跳过维度校验")
+                return
+
+            # 有数据 → 取模型维度 vs 库维度
+            model_dim = self._embedder.get_sentence_embedding_dimension()
+            stored_dim = len(existing["embeddings"][0])
+            if model_dim != stored_dim:
+                msg = (
+                    f"\n{'='*60}\n"
+                    f"❌ 嵌入模型维度不匹配！\n"
+                    f"   模型 {self._embed_model}: {model_dim} 维\n"
+                    f"   库 {self._collection_name}:   {stored_dim} 维\n\n"
+                    f"   原因：ChromaDB 是用另一个模型建的，改模型后没重建。\n\n"
+                    f"   修复命令：\n"
+                    f"     uv run python -c \"from server.engine import get_engine; "
+                    f"e = get_engine(); e.reembed()\"\n"
+                    f"{'='*60}"
+                )
+                logger.error(msg)
+                raise ValueError(msg)
+            logger.info(f"✅ 维度校验通过: 模型={model_dim}d, 库={stored_dim}d")
         except Exception as e:
             if isinstance(e, ValueError):
                 raise
