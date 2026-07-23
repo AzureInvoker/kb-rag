@@ -804,7 +804,7 @@ async function loadBrainMemory(page) {
   el.innerHTML = '<div class="loading">加载中...</div>';
   try {
     const offset = memoryPage * MEMORY_PAGE_SIZE;
-    const res = await fetch(`${API}/api/v1/items?doc_type=brain_memory&offset=${offset}&limit=${MEMORY_PAGE_SIZE}`);
+    const res = await fetch(`${API}/api/v1/memory/items?offset=${offset}&limit=${MEMORY_PAGE_SIZE}`);
     const data = await res.json();
     renderMemoryItems(el, data.items || [], data.total || 0);
   } catch (e) {
@@ -818,7 +818,7 @@ async function doMemorySearch() {
   const el = document.getElementById('memoryResults');
   el.innerHTML = '<div class="loading">搜索中...</div>';
   try {
-    const res = await fetch(`${API}/api/v1/search?query=${encodeURIComponent(query)}&n_results=30&doc_type=brain_memory`);
+    const res = await fetch(`${API}/api/v1/memory/search?query=${encodeURIComponent(query)}&n_results=30`);
     const data = await res.json();
     renderMemoryItems(el, data.results || [], (data.results || []).length, query);
   } catch (e) {

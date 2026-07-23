@@ -254,6 +254,86 @@ async def graph_data():
     return result
 
 
+# ── 脑记忆 REST 端点（前端 💡 记忆 标签页用） ──
+
+
+@app.get("/api/v1/memory/items")
+def memory_items(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, le=200),
+):
+    """脑记忆列表/分页"""
+    mem = app.state.mem_engine
+    results = mem.collection.get(
+        where={"doc_type": "brain_memory"},
+        offset=offset,
+        limit=limit,
+    )
+    items = _fmt_memory_items(results)
+    # 总数
+    all_mem = mem.collection.get(where={"doc_type": "brain_memory"})
+    total = len(all_mem["ids"]) if all_mem["ids"] else 0
+    return {"total": total, "returned": len(items), "items": items}
+
+
+@app.get("/api/v1/memory/search")
+def memory_search(
+    query: str = Query(..., description="搜索关键词"),
+    n_results: int = Query(default=10, le=30),
+):
+    """脑记忆搜索"""
+    mem = app.state.mem_engine
+    raw = mem.search(query=query, n_results=n_results, doc_type="brain_memory")
+    # 用完整 ChromaDB 元数据重新格式化
+    items = []
+    for r in raw:
+        full_meta = mem.collection.get(ids=[r["id"]], include=["metadatas", "documents"])
+        if full_meta and full_meta["ids"]:
+            m = full_meta["metadatas"][0] if full_meta["metadatas"] else {}
+            doc = full_meta["documents"][0] if full_meta["documents"] else ""
+            items.append(_fmt_memory_item(m, doc, r["id"]))
+    return {"query": query, "total": len(items), "results": items}
+
+
+def _fmt_memory_items(results: dict) -> list[dict]:
+    """将 ChromaDB get 结果格式化为前端脑记忆格式"""
+    items = []
+    if not results.get("ids"):
+        return items
+    for i, eid in enumerate(results["ids"]):
+        m = results["metadatas"][i] if results["metadatas"] else {}
+        doc = results["documents"][i] if results["documents"] else ""
+        items.append(_fmt_memory_item(m, doc, eid))
+    return items
+
+
+def _fmt_memory_item(meta: dict, doc: str = "", id_: str = "") -> dict:
+    """格式化单条脑记忆"""
+    return {
+        "id": id_ or meta.get("id", ""),
+        "title": meta.get("title", ""),
+        "content": doc,
+        "metadata": {
+            "target": meta.get("target", ""),
+            "method": meta.get("method", ""),
+            "source": meta.get("source", ""),
+            "params": meta.get("params", ""),
+            "pleasure": meta.get("pleasure", 0),
+            "last_pleasure": meta.get("last_pleasure", meta.get("pleasure", 0)),
+            "avg_pleasure": meta.get("avg_pleasure", 0),
+            "min_pleasure": meta.get("min_pleasure", 0),
+            "max_pleasure": meta.get("max_pleasure", 0),
+            "tries": meta.get("tries", 1),
+            "success_count": meta.get("success_count", 0),
+            "fail_count": meta.get("fail_count", 0),
+            "reliability": meta.get("reliability", 0),
+            "updated_at": meta.get("updated_at", ""),
+        },
+        "doc_type": "brain_memory",
+        "created_at": meta.get("updated_at", ""),
+    }
+
+
 # ── MCP 端点 ──
 
 _mcp_sessions: dict[str, asyncio.Queue] = {}
