@@ -33,7 +33,10 @@ logger = logging.getLogger("engine")
 class VectorEngine:
     """ChromaDB 引擎，管理知识条目的向量化存储和检索"""
 
-    def __init__(self):
+    def __init__(self, chroma_dir=None, embed_model=None, collection_name=None):
+        self._chroma_dir = Path(chroma_dir) if chroma_dir else CHROMA_DIR
+        self._embed_model = embed_model or EMBED_MODEL
+        self._collection_name = collection_name or COLLECTION_NAME
         self._collection = None
         self._embedder = None
         self._init_lock = threading.Lock()
@@ -53,15 +56,15 @@ class VectorEngine:
             import chromadb
             from sentence_transformers import SentenceTransformer
 
-            logger.info(f"加载嵌入模型: {EMBED_MODEL}")
-            self._embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
+            logger.info(f"加载嵌入模型: {self._embed_model}  |  库: {self._chroma_dir} / {self._collection_name}")
+            self._embedder = SentenceTransformer(self._embed_model, device="cpu")
 
-            client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            client = chromadb.PersistentClient(path=str(self._chroma_dir))
             self._collection = client.get_or_create_collection(
-                name=COLLECTION_NAME,
+                name=self._collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
-            logger.info(f"ChromaDB 就绪: {CHROMA_DIR} / {COLLECTION_NAME}")
+            logger.info(f"ChromaDB 就绪")
 
             # ── 维度校验：防止嵌入模型与 ChromaDB 维度不匹配 ──
             self._validate_dimension()
@@ -79,8 +82,8 @@ class VectorEngine:
                     msg = (
                         f"\n{'='*60}\n"
                         f"❌ 嵌入模型维度不匹配！\n"
-                        f"   模型 {EMBED_MODEL}: {model_dim} 维\n"
-                        f"   库 {COLLECTION_NAME}:   {stored_dim} 维\n\n"
+                        f"   模型 {self._embed_model}: {model_dim} 维\n"
+                        f"   库 {self._collection_name}:   {stored_dim} 维\n\n"
                         f"   原因：ChromaDB 是用另一个模型建的，改模型后没重建。\n\n"
                         f"   修复命令：\n"
                         f"     uv run python -c \"from server.engine import get_engine; "
@@ -108,13 +111,13 @@ class VectorEngine:
         from datetime import datetime
 
         # 只加载模型（不连 ChromaDB，避免维度校验报错）
-        logger.warning(f"加载嵌入模型: {EMBED_MODEL}")
-        embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
+        logger.warning(f"加载嵌入模型: {self._embed_model}")
+        embedder = SentenceTransformer(self._embed_model, device="cpu")
 
         logger.warning("⚠️  开始重新嵌入所有数据...")
 
         # 第1步：读取旧数据（所有操作之前，确保数据到手）
-        old_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        old_client = chromadb.PersistentClient(path=str(self._chroma_dir))
         old_cols = old_client.list_collections()
         all_data = {}
         total_items = 0
@@ -130,17 +133,17 @@ class VectorEngine:
 
         # 第2步：带时间戳备份（永不覆写）
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = f"{CHROMA_DIR}_bak_{ts}"
+        backup_dir = f"{self._chroma_dir}_bak_{ts}"
         backup_p = Path(backup_dir)
-        shutil.copytree(str(CHROMA_DIR), str(backup_p))
+        shutil.copytree(str(self._chroma_dir), str(backup_p))
         logger.info(f"  💾 备份: {backup_p}")
 
         # 第3步：删除旧库
-        shutil.rmtree(str(CHROMA_DIR))
+        shutil.rmtree(str(self._chroma_dir))
         logger.info(f"  🗑️  旧库已删除")
 
         # 第4步：用新模型重新嵌入并写入
-        new_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        new_client = chromadb.PersistentClient(path=str(self._chroma_dir))
         for col_name, data in all_data.items():
             docs = data.get("documents") or []
             metas = data.get("metadatas") or []

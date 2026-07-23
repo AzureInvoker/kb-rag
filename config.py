@@ -72,6 +72,23 @@ class Config:
                 data_dir = _find_project_root()
             self.chroma_dir = data_dir / chroma_dir
 
+        # ── 脑记忆库 ──
+        memory_cfg = file_config.get("memory", {}) if file_config else {}
+        self.memory_embed_model = os.getenv("KB_MEMORY_EMBED_MODEL",
+                                            memory_cfg.get("embed_model", self.embed_model))
+        self.memory_collection_name = memory_cfg.get("collection_name", "brain_memory")
+        memory_chroma_dir = memory_cfg.get("chroma_dir", ".chroma_db_memory")
+        memory_env = os.getenv("KB_MEMORY_CHROMA_DIR")
+        if memory_env:
+            self.memory_chroma_dir = Path(memory_env)
+        else:
+            data_dir_env = os.getenv("KB_DATA_DIR", os.getenv("TC_DATA_DIR"))
+            if data_dir_env:
+                data_dir = Path(data_dir_env)
+            else:
+                data_dir = _find_project_root()
+            self.memory_chroma_dir = data_dir / memory_chroma_dir
+
         # ── LightRAG ──
         _lr_enabled = os.getenv("KB_LIGHTRAG_ENABLED", os.getenv("TC_LIGHTRAG_ENABLED"))
         if _lr_enabled is not None:

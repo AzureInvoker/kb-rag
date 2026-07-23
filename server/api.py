@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .engine import get_engine
+from .engine import get_engine, VectorEngine
 try:
     from .config import get_config
 except ImportError:
@@ -33,19 +33,36 @@ logger = logging.getLogger("api")
 async def lifespan(app: FastAPI):
     engine = get_engine()
     cfg = get_config()
+    mem_engine = VectorEngine(
+        chroma_dir=cfg.memory_chroma_dir,
+        embed_model=cfg.memory_embed_model,
+        collection_name=cfg.memory_collection_name,
+    )
     lightrag = LightRAGEngine(cfg)
     search_router = SearchRouter(engine, lightrag)
 
     app.state.engine = engine
+    app.state.mem_engine = mem_engine
     app.state.cfg = cfg
     app.state.lightrag = lightrag
     app.state.search_router = search_router
 
-    # 主动预热：加载嵌入模型 + ChromaDB（避免首次请求延迟）
-    logger.info("预热引擎中...")
-    _ = engine.collection
-    _ = engine.embedder
-    logger.info(f"引擎就绪 (model={cfg.embed_model})")
+    # 后台预热
+    async def _warmup():
+        try:
+            logger.info("后台预热引擎中...")
+            import asyncio, time
+            start = time.time()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: engine.collection)
+            await loop.run_in_executor(None, lambda: engine.embedder)
+            await loop.run_in_executor(None, lambda: mem_engine.collection)
+            await loop.run_in_executor(None, lambda: mem_engine.embedder)
+            elapsed = time.time() - start
+            logger.info(f"引擎预热完成 (model={cfg.embed_model}, mem={cfg.memory_embed_model}, 耗时 {elapsed:.1f}s)")
+        except Exception as e:
+            logger.warning(f"引擎预热失败（将延迟到首次请求加载）: {e}")
+    asyncio.create_task(_warmup())
 
     logger.info(f"kb-rag 启动完成 (port={cfg.api_port}, lightrag={cfg.lightrag_enabled})")
     yield
@@ -335,9 +352,9 @@ async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query
 
         if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
                          "kb_add", "kb_add_batch"):
-            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
         else:
-            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
 
         resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
@@ -384,9 +401,9 @@ async def mcp_direct(msg: MCPMessage):
 
         if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
                          "kb_add", "kb_add_batch"):
-            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
         else:
-            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag)
+            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
 
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 

@@ -288,7 +288,7 @@ TOOLS = [
 # ── 同步 Handler ──
 
 
-def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
+def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None) -> dict:
     """同步 MCP 工具处理函数"""
     # ── kb_search ──
     if name == "kb_search":
@@ -517,11 +517,11 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         target = norm_parts[0]
 
         # 查询所有 brain_memory（精确匹配 + target 级别前缀匹配）
-        exact_results = engine.collection.get(
+        exact_results = (mem_engine or engine).collection.get(
             where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
         )
         # 全量 brain_memory（单条件不用 $and）
-        target_results = engine.collection.get(
+        target_results = (mem_engine or engine).collection.get(
             where={"doc_type": "brain_memory"}
         )
 
@@ -708,7 +708,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         pathsig = " | ".join(sig_parts)
 
         # 精确匹配 pathsig（用 ChromaDB 的 where 过滤，不用语义搜索）
-        exact_matches = engine.collection.get(
+        exact_matches = (mem_engine or engine).collection.get(
             where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
         )
         existing_ids = exact_matches["ids"] if exact_matches and exact_matches["ids"] else []
@@ -755,11 +755,11 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
             keep_id = existing_ids[0]
             dup_ids = existing_ids[1:]
             if dup_ids:
-                engine.collection.delete(ids=dup_ids)
+                (mem_engine or engine).collection.delete(ids=dup_ids)
 
             # 更新笔记（新 note 覆盖旧 note）
             # 注意：不传 documents 避免触发 ChromaDB 重嵌入（降维不匹配问题）
-            engine.collection.update(
+            (mem_engine or engine).collection.update(
                 ids=[keep_id],
                 metadatas=[merged_meta],
             )
@@ -795,7 +795,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
                 created_at=now,
             )
             item.id = item.gen_id()
-            engine.add(item)
+            (mem_engine or engine).add(item)
             return {"content": [{"type": "text", "text": (
                 f"✅ 经验已记录: 「{pathsig}」\n"
                 f"爽感: {pleasure:+d} | 首次探索"
@@ -810,14 +810,14 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
         if reason:
             note_parts.append(f"原因: {reason}")
         args["note"] = " | ".join(note_parts)
-        return handle_tool("mb_remember", args, engine, lightrag_engine)
+        return handle_tool("mb_remember", args, engine, lightrag_engine, mem_engine)
 
     # ── 脑记忆: mb_prune ──
     elif name == "mb_prune":
         dry_run = args.get("dry_run", True)
 
         # 拉取所有 brain_memory
-        all_docs = engine.collection.get(
+        all_docs = (mem_engine or engine).collection.get(
             where={"doc_type": "brain_memory"}
         )
         if not all_docs or not all_docs["ids"]:
@@ -886,7 +886,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
 
         # 实际执行删除
         if to_delete:
-            engine.collection.delete(ids=list(to_delete))
+            (mem_engine or engine).collection.delete(ids=list(to_delete))
             msg = f"🧹 **mb_prune 已完成**\n\n"
             msg += f"清理前: {total_before} 条\n"
             msg += f"已删除: {total_to_delete} 条\n"
@@ -905,7 +905,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
 # ── 异步 Handler（供 api.py 的异步 MCP handler 使用） ──
 
 
-async def async_handle_tool(name: str, args: dict, engine, lightrag_engine) -> dict:
+async def async_handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None) -> dict:
     """异步 MCP 工具处理函数"""
     # 图谱工具用 async
     if name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status"):
