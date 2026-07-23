@@ -7,6 +7,7 @@
 import os
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +36,7 @@ class VectorEngine:
     def __init__(self):
         self._collection = None
         self._embedder = None
+        self._init_lock = threading.Lock()
         # BM25 缓存
         self._bm25 = None
         self._bm25_metadata = None
@@ -44,18 +46,107 @@ class VectorEngine:
     def _lazy_init(self):
         if self._collection is not None:
             return
+        with self._init_lock:
+            # 双重检查锁：拿到锁后再次检查
+            if self._collection is not None:
+                return
+            import chromadb
+            from sentence_transformers import SentenceTransformer
+
+            logger.info(f"加载嵌入模型: {EMBED_MODEL}")
+            self._embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
+
+            client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            self._collection = client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logger.info(f"ChromaDB 就绪: {CHROMA_DIR} / {COLLECTION_NAME}")
+
+            # ── 维度校验：防止嵌入模型与 ChromaDB 维度不匹配 ──
+            self._validate_dimension()
+
+    def _validate_dimension(self):
+        """校验嵌入模型输出维度与 ChromaDB 存储的 embedding 维度一致"""
+        try:
+            sample_emb = self._embedder.encode(["验证维度"]).tolist()
+            model_dim = len(sample_emb[0])
+
+            existing = self._collection.get(limit=1, include=["embeddings"])
+            if existing["ids"] and existing.get("embeddings"):
+                stored_dim = len(existing["embeddings"][0])
+                if model_dim != stored_dim:
+                    msg = (
+                        f"\n{'='*60}\n"
+                        f"❌ 嵌入模型维度不匹配！\n"
+                        f"   模型 {EMBED_MODEL}: {model_dim} 维\n"
+                        f"   库 {COLLECTION_NAME}:   {stored_dim} 维\n\n"
+                        f"   原因：ChromaDB 是用另一个模型建的，改模型后没重建。\n\n"
+                        f"   修复命令：\n"
+                        f"     uv run python -c \"from server.engine import get_engine; "
+                        f"e = get_engine(); e.reembed()\"\n"
+                        f"{'='*60}"
+                    )
+                    logger.error(msg)
+                    raise ValueError(msg)
+                else:
+                    logger.info(f"✅ 维度校验通过: 模型={model_dim}d, 库={stored_dim}d")
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise
+            logger.warning(f"维度校验跳过（新库或无数据）: {e}")
+
+    def reembed(self):
+        """
+        用当前模型重新嵌入所有已有数据（修复模型切换后的维度不匹配）。
+        自动备份旧库，安全可恢复。
+        """
+        import shutil
+        from pathlib import Path
         import chromadb
-        from sentence_transformers import SentenceTransformer
 
-        logger.info(f"加载嵌入模型: {EMBED_MODEL}")
-        self._embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
+        logger.warning("⚠️  开始重新嵌入所有数据...")
 
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self._collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info(f"ChromaDB 就绪: {CHROMA_DIR} / {COLLECTION_NAME}")
+        old_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        old_cols = old_client.list_collections()
+        all_data = {}
+        for col in old_cols:
+            all_data[col.name] = col.get(include=["documents", "metadatas"])
+            logger.info(f"  读取 collection '{col.name}': {col.count()} 条")
+
+        backup_dir = f"{CHROMA_DIR}_reembed_bak"
+        backup_p = Path(backup_dir)
+        if backup_p.exists():
+            shutil.rmtree(backup_p)
+        shutil.copytree(str(CHROMA_DIR), str(backup_p))
+        logger.info(f"  💾 备份: {backup_p}")
+
+        shutil.rmtree(str(CHROMA_DIR))
+        logger.info(f"  🗑️  旧库已删除")
+
+        new_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        for col_name, data in all_data.items():
+            docs = data.get("documents") or []
+            metas = data.get("metadatas") or []
+            ids = data.get("ids") or []
+            if not docs:
+                continue
+            logger.info(f"  ⚡ 重嵌入 '{col_name}' ({len(docs)} 条)...")
+            embs = self._embedder.encode(docs, show_progress_bar=True).tolist()
+            new_col = new_client.get_or_create_collection(name=col_name)
+            new_col.add(
+                documents=docs,
+                metadatas=metas,
+                ids=ids,
+                embeddings=embs,
+            )
+
+        self._collection = None
+        self._bm25 = None
+        self._bm25_all_ids = None
+        self._bm25_size = 0
+        self._lazy_init()
+        logger.info(f"  ✅ reembed 完成！备份在 {backup_p}")
 
     @property
     def collection(self):
