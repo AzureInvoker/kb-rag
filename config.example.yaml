@@ -16,7 +16,7 @@ engine:
   #   BAAI/bge-small-zh-v1.5    (33MB, ⭐推荐，原生中文)
   #   intfloat/multilingual-e5-small  (118MB, 多语言效果更好)
   #   paraphrase-multilingual-MiniLM-L12-v2  (470MB, 其他服务器在用)
-  embed_model: "intfloat/multilingual-e5-small"
+  embed_model: "BAAI/bge-small-zh-v1.5"
   chroma_dir: ".chroma_db"
 
 # ═══════════════════════════════════════════
@@ -40,7 +40,7 @@ lightrag:
     # DeepSeek 使用标准 API 地址 https://api.deepseek.com/v1，无需配 base_url
     api_key: "${DEEPSEEK_API_KEY}"
     # 模型名
-    model: deepseek-chat
+    model: deepseek-v4-flash
     # ── Ollama 模式示例（注释掉上面 deepseek 配置，取消下面注释）──
     # base_url: http://localhost:11434
     # model: qwen2.5:7b
@@ -50,5 +50,5 @@ lightrag:
   embed_model: "intfloat/multilingual-e5-small"
 
   # 检索参数
-  top_k: 20        # 每个查询返回的最大候选数
+  top_k: 10        # 每个查询返回的最大候选数
   mode: mix        # 检索模式: local | global | mix
