@@ -146,12 +146,14 @@ class VectorEngine:
                 embeddings=embs,
             )
 
+        # 重置引擎内部状态，重启服务后自动加载新库
         self._collection = None
+        self._embedder = None
         self._bm25 = None
         self._bm25_all_ids = None
         self._bm25_size = 0
-        self._lazy_init()
         logger.info(f"  ✅ reembed 完成！备份在 {backup_p}")
+        logger.info(f"  🔄 重启服务自动加载新库")
 
     @property
     def collection(self):
