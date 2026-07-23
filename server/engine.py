@@ -104,6 +104,11 @@ class VectorEngine:
         import shutil
         from pathlib import Path
         import chromadb
+        from sentence_transformers import SentenceTransformer
+
+        # 只加载模型（不连 ChromaDB，避免维度校验报错）
+        logger.warning(f"加载嵌入模型: {EMBED_MODEL}")
+        embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
 
         logger.warning("⚠️  开始重新嵌入所有数据...")
 
@@ -132,7 +137,7 @@ class VectorEngine:
             if not docs:
                 continue
             logger.info(f"  ⚡ 重嵌入 '{col_name}' ({len(docs)} 条)...")
-            embs = self._embedder.encode(docs, show_progress_bar=True).tolist()
+            embs = embedder.encode(docs, show_progress_bar=True).tolist()
             new_col = new_client.get_or_create_collection(name=col_name)
             new_col.add(
                 documents=docs,
