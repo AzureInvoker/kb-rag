@@ -273,19 +273,29 @@ class VectorEngine:
 
         engine.add() 写入时将 brain 字段嵌套在 metadata_json JSON 字符串内。
         mb_remember.upsert 直写 collection.update() 时字段在顶层扁平存储。
+        合并逻辑：扁平字段优先（有非空/非零值时覆盖嵌套的同名字段）。
         """
+        # 1. 从 metadata_json 解析嵌套数据
+        nested = {}
         raw_json = meta.get("metadata_json")
         if isinstance(raw_json, str) and raw_json.strip():
             try:
-                return json.loads(raw_json)
+                nested = json.loads(raw_json)
             except (json.JSONDecodeError, TypeError):
-                pass
-        # 扁平格式回退：去掉 ChromaDB 顶层保留字段
+                nested = {}
+        if not isinstance(nested, dict):
+            nested = {}
+
+        # 2. 扁平格式：去掉 ChromaDB 顶层保留字段
         top_level_keys = {"id", "doc_type", "title", "content", "tags", "metadata_json", "created_at"}
         flat = {k: v for k, v in meta.items() if k not in top_level_keys}
-        if flat:
-            return flat
-        return {}
+
+        # 3. 扁平覆盖嵌套（只有扁平字段有 meaningful 值时）
+        result = dict(nested)  # 嵌套为基底
+        for k, v in flat.items():
+            if v is not None and v != "" and v != 0:
+                result[k] = v
+        return result
 
     def search(self, query: str, n_results: int = 10,
                doc_type: str = None) -> list[dict]:
@@ -393,13 +403,7 @@ class VectorEngine:
             except (json.JSONDecodeError, TypeError):
                 tags = []
 
-            raw_meta_json = meta.get("metadata_json", "{}")
-            try:
-                item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
-            except (json.JSONDecodeError, TypeError):
-                item_metadata = {}
-            if not item_metadata:
-                item_metadata = self._extract_brain_meta(meta)
+            item_metadata = self._extract_brain_meta(meta)
 
             results.append({
                 "id": id_,
@@ -495,13 +499,7 @@ class VectorEngine:
         except (json.JSONDecodeError, TypeError):
             tags = []
 
-        raw_meta_json = meta.get("metadata_json", "{}")
-        try:
-            item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
-        except (json.JSONDecodeError, TypeError):
-            item_metadata = {}
-        if not item_metadata:
-            item_metadata = self._extract_brain_meta(meta)
+        item_metadata = self._extract_brain_meta(meta)
 
         return {
             "id": item_id,
@@ -550,13 +548,8 @@ class VectorEngine:
                     tags = json.loads(raw_tags) if raw_tags else []
                 except (json.JSONDecodeError, TypeError):
                     tags = []
-                raw_meta_json = meta.get("metadata_json", "{}")
-                try:
-                    item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
-                except (json.JSONDecodeError, TypeError):
-                    item_metadata = {}
-                if not item_metadata:
-                    item_metadata = self._extract_brain_meta(meta)
+
+                item_metadata = self._extract_brain_meta(meta)
                 items.append({
                     "id": id_,
                     "doc_type": meta.get("doc_type", ""),

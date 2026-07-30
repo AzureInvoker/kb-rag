@@ -205,7 +205,11 @@ def _recall_brain(engine, pathsig: str):
         brain_flat = {k: v for k, v in m.items() if k not in (
             "id", "doc_type", "title", "content", "tags", "metadata_json", "created_at"
         )}
-        bf = brain_raw or brain_flat  # 嵌套优先，扁平兜底
+        # 合并：扁平字段有非空/非零值时覆盖嵌套
+        bf = dict(brain_raw)  # 嵌套为基底
+        for k, v in brain_flat.items():
+            if v is not None and v != "" and v != 0:
+                bf[k] = v
 
         rec = {
             "id": eid,
@@ -478,12 +482,20 @@ TOOLS = [
 
 def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None) -> dict:
     """同步 MCP 工具处理函数"""
+
+    # ── 引擎路由：brain_memory 走 mem_engine ──
+    def _resolve_engine(doc_type=None):
+        if doc_type == "brain_memory" and mem_engine is not None:
+            return mem_engine
+        return engine
+
     # ── kb_search ──
     if name == "kb_search":
         query = args.get("query", "").strip()
         if not query:
             return {"content": [{"type": "text", "text": "请提供搜索关键词"}]}
-        results = engine.search(
+        target = _resolve_engine(args.get("doc_type"))
+        results = target.search(
             query=query,
             n_results=min(int(args.get("n_results", 5)), 20),
             doc_type=args.get("doc_type"),
@@ -507,7 +519,8 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
 
     # ── kb_list ──
     elif name == "kb_list":
-        items = engine.get_all(
+        target = _resolve_engine(args.get("doc_type"))
+        items = target.get_all(
             doc_type=args.get("doc_type"),
             offset=int(args.get("offset", 0)),
             limit=min(int(args.get("limit", 50)), 200),
@@ -523,9 +536,12 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
 
     # ── kb_get ──
     elif name == "kb_get":
-        item = engine.get_by_id(args.get("id", ""))
+        item_id = args.get("id", "")
+        item = engine.get_by_id(item_id)
+        if not item and mem_engine is not None:
+            item = mem_engine.get_by_id(item_id)
         if not item:
-            return {"content": [{"type": "text", "text": f"❌ 条目 {args.get('id')} 不存在"}]}
+            return {"content": [{"type": "text", "text": f"❌ 条目 {item_id} 不存在"}]}
         text = f"# {item['title']}\n\n{_format_item_table(item)}\n\n{item.get('content', '')}"
         return {"content": [{"type": "text", "text": text}]}
 
