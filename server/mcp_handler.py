@@ -6,6 +6,7 @@ MCP 工具定义 + Handler — api 和 stdio server 共享复用
 """
 
 import json
+import math
 import re
 import logging
 from datetime import datetime
@@ -76,6 +77,172 @@ def _format_item_table(item: dict) -> str:
         f"| 创建时间 | {item.get('created_at', '-')} |\n"
         + (f"| metadata | {meta_display} |\n" if meta_display else "")
     )
+
+
+# ── 脑记忆推荐算法助手函数 ──
+
+
+def _time_decay_weight(updated_at_str: str, tau_days: float = 30.0) -> float:
+    """时间衰减权重: exp(-age_days / tau_days)"""
+    if not updated_at_str:
+        return 0.01
+    try:
+        updated = datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S")
+        age_days = (datetime.now() - updated).days
+        if age_days < 0:
+            age_days = 0
+        return math.exp(-age_days / tau_days)
+    except (ValueError, TypeError):
+        return 0.01
+
+
+def _slot_weight(r: dict, tau_days: float = 30.0) -> float:
+    """单条记录的加权可信度 = 时间衰减 × 尝试次数置信度"""
+    tw = _time_decay_weight(r.get("updated_at", ""), tau_days)
+    tc = math.log1p(r.get("tries", 1))
+    return max(tw * tc, 0.01)
+
+
+def _slot_score(records: list, tau_days: float = 30.0) -> float:
+    """对槽内记录计算时间衰减加权平均爽感"""
+    total_w = 0.0
+    total_p = 0.0
+    for r in records:
+        w = _slot_weight(r, tau_days)
+        total_w += w
+        total_p += r.get("avg_pleasure", 0) * w
+    if total_w <= 0:
+        return 0.0
+    return total_p / total_w
+
+
+def _classify_bucket(r: dict) -> str:
+    """按 method + 情感值将记录分类到槽"""
+    method = (r.get("metadata", {}).get("method", "") or "").lower()
+    ap = r.get("avg_pleasure", 0)
+
+    if method in ("exploration_tip", "agent_remember"):
+        return "actionable"
+    if method == "pitfall":
+        return "pitfall"
+    if method == "detour":
+        return "detour"
+    if method == "task_wrapup":
+        return "wrapup"
+
+    # 无 method 标记时按 avg_pleasure 推测
+    if ap >= 0:
+        return "actionable"
+    elif ap <= -4:
+        return "pitfall"
+    else:
+        # -1~-3 边界：算 actionable 低分，不否决整域
+        return "actionable"
+
+
+def _best_note(records: list) -> str:
+    """取槽内最新一条有内容的 note"""
+    for r in sorted(records, key=lambda x: x.get("updated_at", ""), reverse=True):
+        note = (r.get("content", "") or "")[:200]
+        if note.strip():
+            return note.strip()
+    return ""
+
+
+def _build_pathsig(parts: list) -> str:
+    """从 sig_parts 构建归一化 pathsig"""
+    return " | ".join(p.strip() for p in parts if p.strip())
+
+
+def _pathsig_parts(pathsig: str) -> list:
+    """解析 pathsig 为 parts 列表"""
+    return [p.strip() for p in pathsig.split("|")]
+
+
+def _recall_brain(engine, pathsig: str):
+    """多级召回：exact → prefix(target+method+source) → prefix(target+method) → domain(target)
+
+    返回 (exact_record, prefix_sm_records, prefix_tm_records, domain_records)
+    """
+    parts = _pathsig_parts(pathsig)
+    target = parts[0]
+
+    # 全量 brain_memory
+    all_docs = engine.collection.get(where={"doc_type": "brain_memory"})
+    if not all_docs or not all_docs["ids"]:
+        return None, [], [], []
+
+    # 先精确匹配
+    exact = None
+    prefix_sm = []   # target+method+source
+    prefix_tm = []   # target+method
+    domain = []      # target only
+
+    target_parts_n = len(parts)
+    sig_target = parts[0]
+    sig_method = parts[1] if target_parts_n >= 2 else ""
+    sig_source = parts[2] if target_parts_n >= 3 else ""
+    sig_params = parts[3] if target_parts_n >= 4 else ""
+
+    for i, eid in enumerate(all_docs["ids"]):
+        m = all_docs["metadatas"][i] if all_docs["metadatas"] else {}
+        title = (m.get("title", "") or "").strip()
+        if not title:
+            continue
+        rec = {
+            "id": eid,
+            "title": title,
+            "pathsig": title,
+            "content": (all_docs["documents"][i] if all_docs["documents"] else "") or "",
+            "pleasure": m.get("pleasure", 0),
+            "avg_pleasure": m.get("avg_pleasure", 0),
+            "tries": m.get("tries", 1),
+            "min_pleasure": m.get("min_pleasure", 0),
+            "max_pleasure": m.get("max_pleasure", 0),
+            "success_count": m.get("success_count", 0),
+            "fail_count": m.get("fail_count", 0),
+            "reliability": m.get("reliability", 0),
+            "updated_at": m.get("updated_at", ""),
+            "metadata": {
+                "target": m.get("target", ""),
+                "method": m.get("method", ""),
+                "source": m.get("source", ""),
+                "params": m.get("params", ""),
+            },
+        }
+
+        title_parts = _pathsig_parts(title)
+
+        # 精确匹配
+        if title == pathsig:
+            exact = rec
+            continue
+
+        # 前缀匹配：title 以 pathsig 开头
+        full_prefix = pathsig
+        if title.startswith(full_prefix):
+            prefix_sm.append(rec)
+            continue
+
+        # 前缀匹配：target|method
+        if target_parts_n >= 2:
+            tm_prefix = f"{sig_target} | {sig_method}"
+            if title.startswith(tm_prefix):
+                prefix_tm.append(rec)
+                continue
+
+        # 域级匹配：以 target 开头
+        if title.startswith(sig_target) or title == sig_target:
+            # 避免前面已在精确/前缀中收录的
+            if title != pathsig and not title.startswith(f"{sig_target} | {sig_method}"):
+                domain.append(rec)
+                continue
+
+        # fallback: target 在 pathsig 中的
+        if m.get("target") == sig_target and rec not in domain:
+            domain.append(rec)
+
+    return exact, prefix_sm, prefix_tm, domain
 
 
 # ── MCP 工具定义 ──
@@ -208,16 +375,19 @@ TOOLS = [
     },
     {
         "name": "mb_check",
-        "description": "【脑记忆】查询某条路径的经验记录。输入路径签名（target|method|source|params 四级，越完整越精确），返回该路径及上级路径的探索历史、平均爽感值和推荐策略。"
-            "用于 agent 在动手前先判断：这条路走过吗？结果是痛还是爽？应不应该再走一次？\n"
-            "【返回说明】\n"
-            "  - ✅ 推荐: avg_pleasure > 3，多次成功，放心走\n"
-            "  - ⚡ 还行: avg_pleasure > 0，总体偏正面\n"
-            "  - ⚠️ 谨慎: avg_pleasure ≈ 0，有成功有失败\n"
-            "  - ❌ 避开: avg_pleasure < -3，多次失败，换方案\n"
-            "  - 🔄 换方法: 目标下有痛的方法但有别的路子没试\n"
-            "  - 🆕 没试过: 无记录，放心探索\n"
-            "【格式】format=text（默认）返回人类可读文本；format=json 返回结构化 JSON 对象，便于程序化处理",
+        "description": "【脑记忆】查询某条路径的经验记录。输入路径签名（target|method|source|params 四级，越完整越精确），返回该路径的分槽推荐结果。\n"
+            "新算法特性：\\n"
+            "  - 多级召回：精确 → 前缀 → 域级，粒度越细优先级越高\\n"
+            "  - 分槽推荐：actionable（正向）/ pitfall（踩坑）/ detour（死路）分开统计\\n"
+            "  - 时间衰减：30 天外的负向记录权重快速下降\\n"
+            "  - 禁止域级平均决定推荐：细粒度正向可覆盖域级负向\\n"
+            "【返回说明】\\n"
+            "  - ✅ 推荐: actionable >= 2.5，放心走\\n"
+            "  - ❌ 避开: pitfall/detour <= -4 且 14 天无正向\\n"
+            "  - ⚠️ 谨慎（域内可行）: 域级 actionable >= 2.0，但本 pathsig 无精确记录\\n"
+            "  - ⚡ 还行: 总体偏正面但不够强\\n"
+            "  - 🆕 没试过: 无记录\\n"
+            "【格式】format=text（默认）返回人类可读文本；format=json 返回结构化 JSON，含分槽明细",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -253,9 +423,9 @@ TOOLS = [
     },
     {
         "name": "mb_avoid",
-        "description": "【脑记忆】标记某条路径为疼痛路径。等价于 mb_remember + pleasure=-8，快捷方式。\n"
-            "用于 agent 明确知道这条路不该再走时快速标记。\n"
-            "【注意】如果只是普通失败请用 mb_remember，mb_avoid 默认给强力负分。",
+        "description": "【脑记忆】标记某条路径为死路（detour）。默认 pleasure=-6，自动打上 method=detour。\\n"
+            "推荐侧将 detour 放入单独槽处理，不会拉低其他方法的正向经验。\\n"
+            "【注意】如果只是普通失败请用 mb_remember，mb_avoid 标记的死路会彻底否决推荐。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -511,178 +681,281 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
         output_format = args.get("format", "text")
         if not raw_pathsig:
             return {"content": [{"type": "text", "text": "请提供路径签名（pathsig）"}]}
-        # 归一化：统一 "target|method" → "target | method"
+
         norm_parts = [p.strip() for p in raw_pathsig.split("|")]
         pathsig = " | ".join(norm_parts)
         target = norm_parts[0]
 
-        # 查询所有 brain_memory（精确匹配 + target 级别前缀匹配）
-        exact_results = (mem_engine or engine).collection.get(
-            where={"$and": [{"doc_type": "brain_memory"}, {"title": pathsig}]}
-        )
-        # 全量 brain_memory（单条件不用 $and）
-        target_results = (mem_engine or engine).collection.get(
-            where={"doc_type": "brain_memory"}
+        # Step 1: 多级召回
+        exact, prefix_sm, prefix_tm, domain = _recall_brain(
+            mem_engine or engine, pathsig
         )
 
-        # 构建全部匹配列表
-        seen = set()
-        all_results = []
+        # 构建带优先级的所有匹配列表
+        all_ranked = []
+        if exact:
+            all_ranked.append(("exact", exact))
+        for r in prefix_sm:
+            all_ranked.append(("prefix_sm", r))
+        for r in prefix_tm:
+            all_ranked.append(("prefix_tm", r))
+        for r in domain:
+            all_ranked.append(("domain", r))
 
-        def _fmt_exact(ids, metas, docs):
-            items = []
-            for i, eid in enumerate(ids):
-                m = metas[i] if metas else {}
-                doc = docs[i] if docs else ""
-                items.append({
-                    "id": eid,
-                    "title": m.get("title", ""),
-                    "pathsig": m.get("title", ""),
-                    "content": doc or "",
-                    "pleasure": m.get("pleasure", 0),
-                    "avg_pleasure": m.get("avg_pleasure", 0),
-                    "tries": m.get("tries", 1),
-                    "min_pleasure": m.get("min_pleasure", 0),
-                    "max_pleasure": m.get("max_pleasure", 0),
-                    "success_count": m.get("success_count", 0),
-                    "fail_count": m.get("fail_count", 0),
-                    "reliability": m.get("reliability", 0),
-                    "updated_at": m.get("updated_at", ""),
-                    "metadata": {
-                        "target": m.get("target", ""),
-                        "method": m.get("method", ""),
-                        "source": m.get("source", ""),
-                        "params": m.get("params", ""),
-                    },
-                })
-            return items
-
-        # 精确匹配
-        if exact_results and exact_results["ids"]:
-            all_results.extend(_fmt_exact(
-                exact_results["ids"], exact_results["metadatas"], exact_results["documents"]
-            ))
-            seen.update(exact_results["ids"])
-
-        # target 前缀匹配（从全量中筛选 title 以 target 开头的）
-        if target_results and target_results["ids"]:
-            for i, eid in enumerate(target_results["ids"]):
-                if eid in seen:
-                    continue
-                m = target_results["metadatas"][i] if target_results["metadatas"] else {}
-                title = m.get("title", "")
-                if title.startswith(target):
-                    doc = target_results["documents"][i] if target_results["documents"] else ""
-                    all_results.append({
-                        "id": eid,
-                        "title": title,
-                        "pathsig": title,
-                        "content": doc or "",
-                        "pleasure": m.get("pleasure", 0),
-                        "avg_pleasure": m.get("avg_pleasure", 0),
-                        "tries": m.get("tries", 1),
-                        "min_pleasure": m.get("min_pleasure", 0),
-                        "max_pleasure": m.get("max_pleasure", 0),
-                        "success_count": m.get("success_count", 0),
-                        "fail_count": m.get("fail_count", 0),
-                        "reliability": m.get("reliability", 0),
-                        "updated_at": m.get("updated_at", ""),
-                        "metadata": {
-                            "target": m.get("target", ""),
-                            "method": m.get("method", ""),
-                            "source": m.get("source", ""),
-                            "params": m.get("params", ""),
-                        },
-                    })
-
-        if not all_results:
-            empty_result = {
+        if not all_ranked:
+            # 无任何记录
+            result = {
                 "pathsig": pathsig,
                 "found": False,
                 "recommendation": "🆕 没试过",
                 "exact_hit": None,
                 "related_hits": [],
-                "stats": {"total_records": 0, "avg_pleasure": 0, "success_count": 0, "pain_count": 0},
-            }
-            if output_format == "json":
-                return {"content": [{"type": "text", "text": json.dumps(empty_result, ensure_ascii=False, indent=2)}]}
-            return {"content": [{"type": "text", "text": f"🆕 **没试过**: 「{pathsig}」无探索记录\n\n放心尝试，或先在 mb_check 中搜索是否有相近经验"}]}
-
-        # 计算推荐
-        exact_hit = next((r for r in all_results if r["pathsig"] == pathsig), None)
-        target_hits = [r for r in all_results if r["metadata"]["target"] == target]
-
-        total_pleasure = sum(r["pleasure"] for r in target_hits)
-        pain_count = sum(1 for r in target_hits if r["pleasure"] < 0)
-        success_count = sum(1 for r in target_hits if r["pleasure"] >= 0)
-        avg_p = total_pleasure / len(target_hits) if target_hits else 0
-
-        has_other_methods = any(
-            r["pathsig"].startswith(target + "|") and r["pathsig"] != pathsig
-            for r in all_results
-        )
-
-        if avg_p > 3 and success_count >= pain_count:
-            recommendation = "✅ 推荐"
-        elif avg_p > 0:
-            recommendation = "⚡ 还行"
-        elif avg_p > -3:
-            recommendation = "⚠️ 谨慎"
-        else:
-            recommendation = "❌ 避开"
-        if pain_count > success_count and has_other_methods:
-            recommendation += " 🔄 换方法"
-
-        if output_format == "json":
-            result = {
-                "pathsig": pathsig,
-                "found": True,
-                "recommendation": recommendation,
-                "exact_hit": exact_hit,
-                "related_hits": [r for r in all_results if r["pathsig"] != pathsig],
                 "stats": {
-                    "total_records": len(all_results),
-                    "target_total": len(target_hits),
-                    "avg_pleasure": round(avg_p, 2),
-                    "success_count": success_count,
-                    "pain_count": pain_count,
-                    "has_other_methods": has_other_methods,
+                    "total_records": 0,
+                    "avg_pleasure": 0,
+                    "actionable_score": 0,
+                    "pitfall_score": 0,
+                    "detour_score": 0,
                 },
             }
-            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+            if output_format == "json":
+                return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+            return {"content": [{"type": "text", "text": f"🆕 **没试过**: 「{pathsig}」无探索记录\\n\\n放心尝试，或先用 mb_check 搜索更短的 pathsig 看域级经验"}]}
 
-        # ── text 格式输出（保持原有可读风格） ──
-        text = f"## 🧠 脑记忆查询: {pathsig}\n\n"
-        text += f"共找到 {len(all_results)} 条相关记录\n\n"
+        # Step 2: 按粒度分槽打分
+        def _bucket_and_score(records, tau=30):
+            """将记录分槽并计算各槽分"""
+            buckets = {"actionable": [], "pitfall": [], "detour": [], "wrapup": []}
+            for r in records:
+                b = _classify_bucket(r)
+                if b in buckets:
+                    buckets[b].append(r)
+            scores = {}
+            for b in buckets:
+                if buckets[b]:
+                    scores[b] = _slot_score(buckets[b], tau)
+            return buckets, scores
 
-        # 推荐策略
-        display_recommendation = recommendation.replace("✅", "✅ **").replace("⚡", "⚡ **").replace("⚠️", "⚠️ **").replace("❌", "❌ **")
-        if "换方法" in recommendation:
-            display_recommendation = display_recommendation.replace(" 🔄 换方法", "**\n🔄 **换方法** — 当前路径痛，但目标下有其他路子没试")
+        # 细粒度（exact + prefix_sm）
+        fine_records = [r for _, r in all_ranked if _ in ("exact", "prefix_sm")]
+        fine_buckets, fine_scores = _bucket_and_score(fine_records, tau=30)
+
+        # 中粒度（prefix_tm）
+        mid_records = [r for _, r in all_ranked if _ in ("prefix_tm",)]
+        mid_buckets, mid_scores = _bucket_and_score(mid_records, tau=30)
+
+        # 域级（domain only，不含精细/中级中已覆盖的）
+        domain_records = [r for _, r in all_ranked if _ == "domain"]
+        domain_buckets, domain_scores = _bucket_and_score(domain_records, tau=30)
+
+        # 细粒度 + 域级全量（用于决策兜底）
+        full_records = [r for _, r in all_ranked]
+        full_buckets, full_scores = _bucket_and_score(full_records, tau=30)
+
+        # Step 3: 推荐决策
+        def _has_recent_positive(records, days=14):
+            now = datetime.now()
+            for r in records:
+                updated = r.get("updated_at", "")
+                if not updated:
+                    continue
+                try:
+                    updated_ts = datetime.strptime(updated, "%Y-%m-%d %H:%M:%S")
+                    if (now - updated_ts).days <= days and r.get("avg_pleasure", 0) >= 0:
+                        return True
+                except ValueError:
+                    continue
+            return False
+
+        recommendation = ""
+        rec_reasons = []
+
+        # 优先级 1: 细粒度 actionable 且分数达标
+        fine_action = fine_scores.get("actionable", 0)
+        if fine_action >= 2.5:
+            recommendation = "✅ 推荐"
+            rec_reasons.append(f"细粒度确切路径经验良好（得分 {fine_action:.1f}）")
+
+        # 优先级 2: 细粒度 pitfall 强痛且无近期正向
+        elif fine_scores.get("detour", 0) <= -4 or fine_scores.get("pitfall", 0) <= -4:
+            has_recent = _has_recent_positive(fine_records + domain_records, 14)
+            if not has_recent:
+                if fine_scores.get("detour", 0) <= -4:
+                    recommendation = "❌ 避开"
+                    detour_score = fine_scores["detour"]
+                    rec_reasons.append(f"细粒度路径标记为死路（得分 {detour_score:.1f}）")
+                else:
+                    recommendation = "❌ 避开"
+                    pit_score = fine_scores["pitfall"]
+                    rec_reasons.append(f"细粒度路径多次踩坑（得分 {pit_score:.1f}）")
+            else:
+                # 有近期正向，pitfall 不否决
+                if fine_action > 0:
+                    recommendation = "⚡ 还行"
+                    rec_reasons.append(f"虽有痛点但近期有成功经验（actionable {fine_action:.1f}）")
+                else:
+                    recommendation = "⚠️ 谨慎"
+                    rec_reasons.append("有痛点但近期有正向记录，不完全否决")
+
+        # 优先级 3: 域级 actionable 存在（细粒度无记录）
+        elif domain_scores.get("actionable", 0) >= 2.0:
+            recommendation = "⚠️ 谨慎（域内可行）"
+            rec_reasons.append(f"本 pathsig 无精确记录；域级有可行路径（得分 {domain_scores['actionable']:.1f}）")
+
+        # 优先级 4: 域级 detour 存在且 actionable 为空
+        elif domain_scores.get("detour", 0) < -3 and domain_scores.get("actionable", 0) < 1:
+            recommendation = "❌ 避开（域级）"
+            rec_reasons.append("域级均标记为死路，不建议尝试")
+
+        # 优先级 5: 有记录但分数不够明确
+        elif full_scores.get("actionable", 0) > 0:
+            recommendation = "⚡ 还行"
+            rec_reasons.append(f"总体偏正面（actionable {full_scores['actionable']:.1f}）")
+        elif full_scores.get("actionable", 0) > -2:
+            recommendation = "⚠️ 谨慎"
+            rec_reasons.append("记录混杂，建议先搜索更精确的 pathsig 或谨慎尝试")
         else:
-            display_recommendation += "**"
+            recommendation = "🆕 没试过"
+            rec_reasons.append("当前 pathsig 无有效可用记录")
 
-        text += f"**推荐**: {display_recommendation}\n\n"
-        text += f"**整体统计**: 总记录 {len(target_hits)} 条 | 平均爽感 {avg_p:.1f} | 😊 {success_count}  | 😣 {pain_count}\n\n"
-        text += "### 📋 详细记录\n\n"
+        # 换方法提示（当细粒度痛但域级有其他method时）
+        has_other_methods = any(
+            r.get("metadata", {}).get("method", "") != ""
+            and r["pathsig"] != (exact["pathsig"] if exact else "")
+            for _, r in all_ranked
+        )
+        if has_other_methods and ("❌" in recommendation or "⚠️" in recommendation):
+            alt_methods = set()
+            for _, r in all_ranked:
+                m = r.get("metadata", {}).get("method", "")
+                if m and (not exact or r["pathsig"] != exact["pathsig"]):
+                    alt_methods.add(m)
+            if alt_methods:
+                rec_reasons.append(f"可尝试其他方法: {', '.join(sorted(alt_methods)[:3])}")
 
-        # 按 pathsig 排序展示
-        for r in sorted(all_results, key=lambda x: -x["tries"]):
-            ap = r["avg_pleasure"]
-            tr = r["tries"]
-            text += f"**{r['pathsig']}**"
-            if ap > 0:
-                text += " 😊"
-            elif ap < 0:
-                text += " 😣"
-            text += f" | 爽感 {ap:.1f} | 尝试 {tr} 次"
-            if r.get("updated_at"):
-                text += f" | 最后更新 {r['updated_at']}"
-            text += "\n"
-            note = r.get("content", "")[:200]
-            if note:
-                text += f"> {note}\n"
-            text += "\n"
+        # Step 4: 构造 JSON 结果
+        def _build_slot_summary(buckets, scores):
+            summary = {}
+            for b in ("actionable", "pitfall", "detour", "wrapup"):
+                recs = buckets.get(b, [])
+                if recs:
+                    summary[b] = {
+                        "count": len(recs),
+                        "score": round(scores.get(b, 0), 2),
+                        "latest_note": _best_note(recs),
+                    }
+            return summary
+
+        json_result = {
+            "pathsig": pathsig,
+            "found": True,
+            "granularity": "exact" if exact else ("prefix_sm" if prefix_sm else ("prefix_tm" if prefix_tm else "domain")),
+            "recommendation": recommendation,
+            "recommendation_reasons": rec_reasons,
+            "exact_hit": exact,
+            "fine_grained": _build_slot_summary(fine_buckets, fine_scores),
+            "domain_level": _build_slot_summary(domain_buckets, domain_scores),
+            "stats": {
+                "total_records": len(full_records),
+                "fine_actionable_score": round(fine_scores.get("actionable", 0), 2),
+                "fine_pitfall_score": round(fine_scores.get("pitfall", 0), 2),
+                "fine_detour_score": round(fine_scores.get("detour", 0), 2),
+                "domain_actionable_score": round(domain_scores.get("actionable", 0), 2),
+                "domain_pitfall_score": round(domain_scores.get("pitfall", 0), 2),
+            },
+        }
+
+        if output_format == "json":
+            return {"content": [{"type": "text", "text": json.dumps(json_result, ensure_ascii=False, indent=2)}]}
+
+        # Step 5: text 格式输出（新展示格式）
+        text = f"## 🧠 脑记忆: {pathsig}\\n\\n"
+
+        # 推荐结论
+        text += f"**推荐**: {recommendation}\\n\\n"
+        for reason in rec_reasons:
+            text += f"  — {reason}\\n"
+        text += "\\n"
+
+        # 粒度标签
+        granularity_label = {
+            "exact": "精确匹配",
+            "prefix_sm": "前缀(target+method+source)",
+            "prefix_tm": "前缀(target+method)",
+            "domain": "域级(target)",
+        }
+        text += f"**匹配粒度**: {granularity_label.get(json_result['granularity'], json_result['granularity'])}\\n"
+        text += f"**总记录**: {len(full_records)} 条\\n\\n"
+
+        # 细粒度槽展示
+        if fine_records:
+            text += "### 🎯 细粒度记录\\n\\n"
+            for b_name, b_label, b_icon in [
+                ("actionable", "可行路径", "😊"),
+                ("pitfall", "踩坑", "😣"),
+                ("detour", "死路", "💀"),
+                ("wrapup", "总结", "📝"),
+            ]:
+                records = fine_buckets.get(b_name, [])
+                if records:
+                    score = fine_scores.get(b_name, 0)
+                    note = _best_note(records)
+                    text += f"**{b_icon} {b_label}**: {len(records)} 条 | 得分 {score:.1f}\\n"
+                    if note:
+                        text += f"> {note}\\n"
+                    # 列出每条记录的 pathsig + 时间
+                    for r in sorted(records, key=lambda x: -_slot_weight(x)):
+                        ap = r.get("avg_pleasure", 0)
+                        tr = r.get("tries", 1)
+                        upd = r.get("updated_at", "")[:10]
+                        text += f"  · `{r['pathsig']}` → {ap:+.1f} × {tr}次 ({upd})\\n"
+                    text += "\\n"
+
+        # 域级记录展示
+        if domain_records:
+            text += "### 🌐 域级记录\\n\\n"
+            for b_name, b_label, b_icon in [
+                ("actionable", "可行路径", "😊"),
+                ("pitfall", "踩坑", "😣"),
+                ("detour", "死路", "💀"),
+            ]:
+                records = domain_buckets.get(b_name, [])
+                if records:
+                    score = domain_scores.get(b_name, 0)
+                    note = _best_note(records)
+                    text += f"**{b_icon} {b_label}**: {len(records)} 条 | 得分 {score:.1f}\\n"
+                    if note:
+                        text += f"> {note}\\n"
+                    for r in sorted(records, key=lambda x: -_slot_weight(x))[:3]:
+                        ap = r.get("avg_pleasure", 0)
+                        tr = r.get("tries", 1)
+                        upd = r.get("updated_at", "")[:10]
+                        text += f"  · `{r['pathsig']}` → {ap:+.1f} × {tr}次 ({upd})\\n"
+                    if len(records) > 3:
+                        text += f"  · ... 还有 {len(records)-3} 条\\n"
+                    text += "\\n"
+
+        # 建议提示
+        if "✅" in recommendation:
+            text += "💡 **建议**: 放心走，已有成熟路径\\n"
+        elif "❌" in recommendation:
+            tip_methods = set()
+            for _, r in all_ranked:
+                m = r.get("metadata", {}).get("method", "")
+                if m and m.lower() not in ("pitfall", "detour") and (not exact or r["pathsig"] != exact["pathsig"]):
+                    tip_methods.add(m)
+            if tip_methods:
+                text += f"💡 **建议**: 换方法试试 → `{target} | {' | '.join(list(tip_methods)[:2])}`\\n"
+            else:
+                text += "💡 **建议**: 换目标或搜索其他方案\\n"
+        elif "⚠️" in recommendation:
+            if exact:
+                text += "💡 **建议**: 路径有混杂记录，先看细粒度正向经验再决定\\n"
+            else:
+                text += "💡 **建议**: 当前 pathsig 无确切记录，域级有经验参考；建议明确完整 pathsig 再查询\\n"
+        else:
+            text += "💡 **建议**: 无记录，放心探索，完成后用 mb_remember 记录经验\\n"
+
         return {"content": [{"type": "text", "text": text.strip()}]}
 
     # ── 脑记忆: mb_remember (upsert) ──
@@ -803,9 +1076,12 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
 
     # ── 脑记忆: mb_avoid ──
     elif name == "mb_avoid":
-        # mb_avoid 内部调用 mb_remember 的逻辑，但 pleasure=-8
-        args["pleasure"] = -8
-        note_parts = ["🚫 标记为疼痛路径"]
+        # mb_avoid — 标记为 detour 槽，默认 pleasure=-6
+        args["pleasure"] = -6
+        # 设置 method=detour 以确保推荐侧正确分槽
+        if not args.get("method"):
+            args["method"] = "detour"
+        note_parts = ["🚫 标记为死路（detour）"]
         reason = _clean_text(args.get("reason", ""))
         if reason:
             note_parts.append(f"原因: {reason}")
