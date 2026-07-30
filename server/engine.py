@@ -267,7 +267,25 @@ class VectorEngine:
         except Exception:
             return 0
 
-    # ── 检索 ──
+    @staticmethod
+    def _extract_brain_meta(meta: dict) -> dict:
+        """从 ChromaDB metadata 中提取知识条目元数据，兼容嵌套和扁平两种存储格式。
+
+        engine.add() 写入时将 brain 字段嵌套在 metadata_json JSON 字符串内。
+        mb_remember.upsert 直写 collection.update() 时字段在顶层扁平存储。
+        """
+        raw_json = meta.get("metadata_json")
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                return json.loads(raw_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 扁平格式回退：去掉 ChromaDB 顶层保留字段
+        top_level_keys = {"id", "doc_type", "title", "content", "tags", "metadata_json", "created_at"}
+        flat = {k: v for k, v in meta.items() if k not in top_level_keys}
+        if flat:
+            return flat
+        return {}
 
     def search(self, query: str, n_results: int = 10,
                doc_type: str = None) -> list[dict]:
@@ -380,6 +398,8 @@ class VectorEngine:
                 item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
             except (json.JSONDecodeError, TypeError):
                 item_metadata = {}
+            if not item_metadata:
+                item_metadata = self._extract_brain_meta(meta)
 
             results.append({
                 "id": id_,
@@ -480,6 +500,8 @@ class VectorEngine:
             item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
         except (json.JSONDecodeError, TypeError):
             item_metadata = {}
+        if not item_metadata:
+            item_metadata = self._extract_brain_meta(meta)
 
         return {
             "id": item_id,
@@ -533,6 +555,8 @@ class VectorEngine:
                     item_metadata = json.loads(raw_meta_json) if raw_meta_json else {}
                 except (json.JSONDecodeError, TypeError):
                     item_metadata = {}
+                if not item_metadata:
+                    item_metadata = self._extract_brain_meta(meta)
                 items.append({
                     "id": id_,
                     "doc_type": meta.get("doc_type", ""),
