@@ -309,25 +309,27 @@ def _fmt_memory_items(results: dict) -> list[dict]:
 
 def _fmt_memory_item(meta: dict, doc: str = "", id_: str = "") -> dict:
     """格式化单条脑记忆"""
+    # 解析 brain 元数据，兼容嵌套(engine.add)和扁平(collection.update)格式
+    brain = VectorEngine._extract_brain_meta(meta)
     return {
         "id": id_ or meta.get("id", ""),
         "title": meta.get("title", ""),
         "content": doc,
         "metadata": {
-            "target": meta.get("target", ""),
-            "method": meta.get("method", ""),
-            "source": meta.get("source", ""),
-            "params": meta.get("params", ""),
-            "pleasure": meta.get("pleasure", 0),
-            "last_pleasure": meta.get("last_pleasure", meta.get("pleasure", 0)),
-            "avg_pleasure": meta.get("avg_pleasure", 0),
-            "min_pleasure": meta.get("min_pleasure", 0),
-            "max_pleasure": meta.get("max_pleasure", 0),
-            "tries": meta.get("tries", 1),
-            "success_count": meta.get("success_count", 0),
-            "fail_count": meta.get("fail_count", 0),
-            "reliability": meta.get("reliability", 0),
-            "updated_at": meta.get("updated_at", ""),
+            "target": brain.get("target", ""),
+            "method": brain.get("method", ""),
+            "source": brain.get("source", ""),
+            "params": brain.get("params", ""),
+            "pleasure": brain.get("pleasure", 0),
+            "last_pleasure": brain.get("last_pleasure", brain.get("pleasure", 0)),
+            "avg_pleasure": brain.get("avg_pleasure", 0),
+            "min_pleasure": brain.get("min_pleasure", 0),
+            "max_pleasure": brain.get("max_pleasure", 0),
+            "tries": brain.get("tries", 1),
+            "success_count": brain.get("success_count", 0),
+            "fail_count": brain.get("fail_count", 0),
+            "reliability": brain.get("reliability", 0),
+            "updated_at": brain.get("updated_at", ""),
         },
         "doc_type": "brain_memory",
         "created_at": meta.get("updated_at", ""),
