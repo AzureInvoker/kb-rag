@@ -189,25 +189,43 @@ def _recall_brain(engine, pathsig: str):
         title = (m.get("title", "") or "").strip()
         if not title:
             continue
+
+        # ── 解析 brain_memory 元数据 ──
+        # engine.add() 写入时将 brain 字段嵌套在 metadata_json JSON 字符串内
+        # mb_remember.upsert 直写 collection.update() 时字段在顶层扁平存储
+        # 兼容两种格式
+        brain_raw = {}
+        raw_json = m.get("metadata_json")
+        if isinstance(raw_json, str):
+            try:
+                brain_raw = json.loads(raw_json)
+            except (json.JSONDecodeError, TypeError):
+                brain_raw = {}
+        # 扁平格式回退（collection.update 写入的）
+        brain_flat = {k: v for k, v in m.items() if k not in (
+            "id", "doc_type", "title", "content", "tags", "metadata_json", "created_at"
+        )}
+        bf = brain_raw or brain_flat  # 嵌套优先，扁平兜底
+
         rec = {
             "id": eid,
             "title": title,
             "pathsig": title,
             "content": (all_docs["documents"][i] if all_docs["documents"] else "") or "",
-            "pleasure": m.get("pleasure", 0),
-            "avg_pleasure": m.get("avg_pleasure", 0),
-            "tries": m.get("tries", 1),
-            "min_pleasure": m.get("min_pleasure", 0),
-            "max_pleasure": m.get("max_pleasure", 0),
-            "success_count": m.get("success_count", 0),
-            "fail_count": m.get("fail_count", 0),
-            "reliability": m.get("reliability", 0),
-            "updated_at": m.get("updated_at", ""),
+            "pleasure": bf.get("pleasure", 0) or m.get("pleasure", 0),
+            "avg_pleasure": bf.get("avg_pleasure", 0) or m.get("avg_pleasure", 0),
+            "tries": bf.get("tries", 1) or m.get("tries", 1),
+            "min_pleasure": bf.get("min_pleasure", 0) or m.get("min_pleasure", 0),
+            "max_pleasure": bf.get("max_pleasure", 0) or m.get("max_pleasure", 0),
+            "success_count": bf.get("success_count", 0) or m.get("success_count", 0),
+            "fail_count": bf.get("fail_count", 0) or m.get("fail_count", 0),
+            "reliability": bf.get("reliability", 0) or m.get("reliability", 0),
+            "updated_at": bf.get("updated_at", "") or m.get("updated_at", ""),
             "metadata": {
-                "target": m.get("target", ""),
-                "method": m.get("method", ""),
-                "source": m.get("source", ""),
-                "params": m.get("params", ""),
+                "target": bf.get("target", "") or m.get("target", ""),
+                "method": bf.get("method", "") or m.get("method", ""),
+                "source": bf.get("source", "") or m.get("source", ""),
+                "params": bf.get("params", "") or m.get("params", ""),
             },
         }
 
@@ -1008,6 +1026,8 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             new_avg = round((all_avg_sum + pleasure) / new_tries, 2)
 
             merged_meta = {
+                "doc_type": "brain_memory",
+                "title": pathsig,
                 "target": target,
                 "method": method,
                 "source": source,
