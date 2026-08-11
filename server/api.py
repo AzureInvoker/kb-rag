@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
         chroma_dir=cfg.memory_chroma_dir,
         embed_model=cfg.memory_embed_model,
         collection_name=cfg.memory_collection_name,
+        enable_chunking=False,
+        enable_rerank=False,
     )
     lightrag = LightRAGEngine(cfg)
     search_router = SearchRouter(engine, lightrag)
@@ -73,7 +75,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="通用知识库 API",
     description="KB-RAG — 多类型知识条目存储 + 语义检索 + 知识图谱 + Agentic MCP",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -117,7 +119,7 @@ def health():
     return {
         "status": "ok",
         "name": "kb-rag",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "timestamp": int(time.time()),
     }
 
@@ -390,7 +392,7 @@ def mcp_info():
     cfg = app.state.cfg
     return {
         "name": "kb-rag-mcp",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "transport": "HTTP + SSE",
         "endpoints": {"sse": "/mcp/sse", "message": "/mcp/message", "direct": "POST /mcp"},
         "tools": [t["name"] for t in TOOLS],
@@ -418,7 +420,7 @@ async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kb-rag-mcp", "version": "1.0.0"},
+                "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
             },
         }
     if method in ("notifications/initialized",):
@@ -467,7 +469,7 @@ async def mcp_direct(msg: MCPMessage):
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kb-rag-mcp", "version": "1.0.0"},
+                "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
             },
         }
     if method in ("notifications/initialized",):

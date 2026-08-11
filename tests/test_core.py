@@ -63,15 +63,20 @@ def test_knowledge_item_embedding_text():
 
 
 def test_knowledge_item_bm25_text():
-    """测试 BM25 文本：拼接标题+类型+标签"""
+    """测试 BM25 文本：拼接标题+类型+标签+正文"""
     from server.models import KnowledgeItem
 
-    item = KnowledgeItem(title="登录", doc_type="test_case", tags=["冒烟", "核心"])
+    item = KnowledgeItem(
+        title="登录",
+        doc_type="test_case",
+        content="用户名密码校验",
+        tags=["冒烟", "核心"],
+    )
     text = item.get_bm25_text()
     assert "登录" in text
     assert "test_case" in text
     assert "冒烟" in text
-    assert "核心" in text
+    assert "用户名密码校验" in text
     print("  ✅ test_knowledge_item_bm25_text")
 
 
@@ -232,7 +237,7 @@ def test_engine_add_and_search():
     from server.engine import VectorEngine
     from server.models import KnowledgeItem
 
-    engine = VectorEngine()
+    engine = VectorEngine(enable_chunking=False, enable_rerank=False)
 
     # 添加
     item = KnowledgeItem(title="登录测试", doc_type="test_case",
@@ -282,6 +287,33 @@ def test_engine_add_and_search():
     print("  ✅ test_engine_add_and_search")
 
 
+def test_rrf_fusion():
+    from server.retrieval import reciprocal_rank_fusion
+
+    scores = reciprocal_rank_fusion([["a", "b", "c"], ["c", "a"]], k=60)
+    assert scores["a"] > scores["b"]
+    assert scores["c"] > scores["b"]
+    print("  ✅ test_rrf_fusion")
+
+
+def test_chunk_split_and_dedupe():
+    from server.retrieval import dedupe_by_parent, split_content
+
+    chunks = split_content("A" * 1200, chunk_size=500, overlap=80)
+    assert len(chunks) >= 2
+
+    rows = [
+        {"id": "p1_c0", "parent_id": "p1", "score": 0.5, "is_chunk": True},
+        {"id": "p1_c1", "parent_id": "p1", "score": 0.9, "is_chunk": True},
+        {"id": "p2", "parent_id": "p2", "score": 0.7, "is_chunk": False},
+    ]
+    out = dedupe_by_parent(rows)
+    assert len(out) == 2
+    assert out[0]["id"] == "p1"
+    assert out[0]["score"] == 0.9
+    print("  ✅ test_chunk_split_and_dedupe")
+
+
 # ── 运行 ──
 
 if __name__ == "__main__":
@@ -301,6 +333,8 @@ if __name__ == "__main__":
         test_config_defaults,
         test_config_env_override,
         test_engine_add_and_search,
+        test_rrf_fusion,
+        test_chunk_split_and_dedupe,
     ]
 
     passed = 0

@@ -1,77 +1,78 @@
 # kb-rag
 
-通用知识库 —— 支持多种文档类型的向量 + BM25 混合搜索系统，集成 LightRAG 知识图谱增强。
+通用知识库 —— 向量 + BM25 + RRF + Rerank 混合检索，可选 LightRAG 知识图谱增强。
+
+## v1.1.0 检索增强
+
+- **BM25 全文**：标题 + 标签 + 正文关键词匹配
+- **RRF 融合**：向量与 BM25 用 Reciprocal Rank Fusion 合并（替代固定 0.6/0.4）
+- **Reranker**：可选 `BAAI/bge-reranker-v2-m3` 二次排序
+- **长文档分块**：超过 `chunking.min_chars` 自动切块（路径脑 `mb_*` 不受影响）
+- **内置评测**：`python scripts/eval_recall.py`
 
 ## 架构
 
 ```
 kb-rag/
-├── config.py              配置加载
-├── config.yaml            配置文件（gitignore 中，不提交）
-├── run.sh                 启动/停止
+├── config.py / config.example.yaml
+├── run.sh
 ├── server/
-│   ├── models.py          数据模型
-│   ├── engine.py          核心引擎（ChromaDB + BM25）
-│   ├── config.py          → 项目根 config.py
-│   ├── lightrag_engine.py LightRAG 知识图谱封装
-│   ├── search.py          SearchRouter 统一检索入口
-│   ├── api.py             FastAPI + REST + MCP SSE
-│   ├── mcp_handler.py     MCP 工具定义（api 和 stdio 共享）
-│   └── static/index.html  前端页面
-├── mcp/
-│   └── server.py          stdio MCP 服务器
+│   ├── engine.py          核心引擎（ChromaDB + BM25 + RRF + Rerank）
+│   ├── retrieval.py       RRF / 分块 / Reranker
+│   ├── lightrag_engine.py LightRAG 知识图谱
+│   ├── search.py          SearchRouter
+│   ├── api.py             FastAPI + MCP
+│   └── mcp_handler.py     MCP 工具
 └── scripts/
-    └── migrate_from_tc.py 从 testcase-rag 迁移数据
+    ├── backfill_content.py   旧库回填 metadata.content
+    ├── reindex_chunks.py     长文档重新分块
+    ├── backfill_lightrag.py  图谱回填
+    └── eval_recall.py        召回评测
 ```
 
 ## 快速开始
 
 ```bash
-# 安装依赖
-uv pip install -r requirements.txt
-
-# 配置（复制并编辑）
+uv sync
 cp config.example.yaml config.yaml
-# 编辑 config.yaml 填入 DeepSeek API Key
+# 编辑 config.yaml（端口 8766、DeepSeek API Key、LightRAG 等）
 
-# 启动
 ./run.sh start
+./run.sh test
 ```
 
-## 文档类型
+## 升级已有库（无需重建路径脑）
 
-通过 `doc_type` 字段区分不同知识类型，例如：
-- `test_case` — 测试用例（metadata 含 module/priority/preconditions 等）
-- `doc` — 普通文档
-- `faq` — 常见问题
-- `wiki` — 维基条目
+```bash
+# 1. 回填全文到 metadata（BM25 可搜正文）
+python scripts/backfill_content.py
 
-## API 端点
+# 2. 可选：长文档重新分块
+python scripts/reindex_chunks.py
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /api/v1/health | 健康检查 |
-| GET | /api/v1/search | 语义搜索 |
-| GET | /api/v1/items | 列表/筛选 |
-| GET | /api/v1/items/{id} | 详情 |
-| POST | /api/v1/items | 添加 |
-| POST | /api/v1/items/batch | 批量添加 |
-| DELETE | /api/v1/items/{id} | 删除 |
-| GET | /api/v1/stats | 统计 |
-| GET | /api/v1/graph/status | 图谱状态 |
-| GET | /api/v1/graph/search | 图谱搜索 |
+# 3. 若换了嵌入模型
+uv run python -c "from server.engine import get_engine; get_engine().reembed()"
+
+# 4. LightRAG 图谱需单独重建
+rm -rf .lightrag_storage && python scripts/backfill_lightrag.py
+```
+
+## 配置要点
+
+三处嵌入模型建议保持一致：
+
+```yaml
+engine.embed_model: "BAAI/bge-small-zh-v1.5"
+memory.embed_model: "BAAI/bge-small-zh-v1.5"
+lightrag.embed_model: "BAAI/bge-small-zh-v1.5"
+```
+
+检索增强见 `config.example.yaml` 的 `retrieval` 段。
 
 ## MCP 工具
 
-| 工具名 | 功能 |
-|--------|------|
-| kb_search | 基础语义搜索 |
-| kb_list | 列表浏览 |
-| kb_get | 获取详情 |
-| kb_add | 添加条目 |
-| kb_add_batch | 批量添加 |
-| kb_delete | 删除条目 |
-| kb_stats | 知识库统计 |
-| kb_graph_search | 知识图谱搜索 |
-| kb_agentic_search | 自适应检索(向量+图谱) |
-| kb_graph_status | 图谱状态诊断 |
+| 工具 | 功能 |
+|------|------|
+| kb_search / kb_agentic_search | 混合检索 |
+| kb_add / kb_delete | 写入 / 删除 |
+| mb_check / mb_remember / mb_avoid / mb_prune | 路径脑（独立库，不受分块影响） |

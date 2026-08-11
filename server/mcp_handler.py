@@ -673,12 +673,11 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
                 if summary_only:
                     text += f"> 摘要: {r.get('summary', '')}\n\n"
                 else:
-                    # 获取完整内容（从 summary 已有 200 字符，想要完整内容需要单独拉）
-                    content = r.get("summary", "")
-                    # 尝试从 engine 获取完整内容
-                    full = engine.get_by_id(r["id"])
-                    if full and full.get("content"):
-                        content = full["content"]
+                    content = r.get("content") or r.get("summary", "")
+                    if not content or len(content) < 200:
+                        full = engine.get_by_id(r["id"])
+                        if full and full.get("content"):
+                            content = full["content"]
                     if len(content) > 4000:
                         content = content[:4000] + "\n... [内容截断，超出 4000 字符]"
                     text += f"> {content}\n\n"

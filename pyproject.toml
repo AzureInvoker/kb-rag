@@ -1,7 +1,7 @@
 [project]
 name = "kb-rag"
-version = "1.0.0"
-description = "通用知识库 — 多类型文档存储 + 向量/BM25 混合搜索 + LightRAG 知识图谱"
+version = "1.1.0"
+description = "通用知识库 — 混合检索(RRF+BM25+Rerank) + 长文档分块 + LightRAG 知识图谱"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

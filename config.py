@@ -18,6 +18,10 @@
   KB_OLLAMA_BASE_URL    Ollama 地址 (默认 http://localhost:11434)
   KB_LLM_MODEL          LLM 模型名
 
+  # 检索增强
+  KB_RERANK_ENABLED     是否启用 Reranker
+  KB_CHUNK_ENABLED      是否启用长文档分块
+
 兼容旧变量（TC_* 前缀亦可用，KB_* 优先）
 """
 
@@ -46,6 +50,9 @@ class Config:
         file_config = _load_config_file()
         api_cfg = file_config.get("api", {}) if file_config else {}
         engine_cfg = file_config.get("engine", {}) if file_config else {}
+        retrieval_cfg = file_config.get("retrieval", {}) if file_config else {}
+        chunk_cfg = retrieval_cfg.get("chunking", {}) if retrieval_cfg else {}
+        rerank_cfg = retrieval_cfg.get("rerank", {}) if retrieval_cfg else {}
         lightrag_cfg = file_config.get("lightrag", {}) if file_config else {}
         llm_cfg = lightrag_cfg.get("llm", {}) if lightrag_cfg else {}
 
@@ -57,7 +64,7 @@ class Config:
 
         # ── Engine ──
         self.embed_model = os.getenv("KB_EMBED_MODEL", os.getenv("TC_EMBED_MODEL",
-                                    engine_cfg.get("embed_model", "intfloat/multilingual-e5-small")))
+                                    engine_cfg.get("embed_model", "BAAI/bge-small-zh-v1.5")))
         self.collection_name = engine_cfg.get("collection_name", "knowledge_items")
 
         chroma_dir = engine_cfg.get("chroma_dir", ".chroma_db")
@@ -71,6 +78,28 @@ class Config:
             else:
                 data_dir = _find_project_root()
             self.chroma_dir = data_dir / chroma_dir
+
+        # ── 检索增强 ──
+        self.rrf_k = int(retrieval_cfg.get("rrf_k", 60))
+        self.vec_candidates = int(retrieval_cfg.get("vec_candidates", 30))
+        self.bm25_candidates = int(retrieval_cfg.get("bm25_candidates", 50))
+
+        _chunk_env = os.getenv("KB_CHUNK_ENABLED")
+        if _chunk_env is not None:
+            self.chunk_enabled = _chunk_env.lower() in ("1", "true", "yes")
+        else:
+            self.chunk_enabled = bool(chunk_cfg.get("enabled", True))
+        self.chunk_min_chars = int(chunk_cfg.get("min_chars", 1000))
+        self.chunk_size = int(chunk_cfg.get("chunk_size", 500))
+        self.chunk_overlap = int(chunk_cfg.get("overlap", 80))
+
+        _rerank_env = os.getenv("KB_RERANK_ENABLED")
+        if _rerank_env is not None:
+            self.rerank_enabled = _rerank_env.lower() in ("1", "true", "yes")
+        else:
+            self.rerank_enabled = bool(rerank_cfg.get("enabled", True))
+        self.rerank_model = rerank_cfg.get("model", "BAAI/bge-reranker-v2-m3")
+        self.rerank_top_n = int(rerank_cfg.get("top_n", 20))
 
         # ── 脑记忆库 ──
         memory_cfg = file_config.get("memory", {}) if file_config else {}

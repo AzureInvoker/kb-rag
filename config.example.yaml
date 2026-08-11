@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────
-# 测试用例知识库 — 配置文件参考模板
+# kb-rag 配置文件参考模板
 # 复制为 config.yaml 并按需修改
 # config.yaml 本身已被 .gitignore 忽略，
 # 各服务器可独立维护配置
@@ -8,59 +8,67 @@
 # API 服务
 api:
   host: "0.0.0.0"
-  port: 8765
+  port: 8766
 
 # 向量引擎
 engine:
   # 嵌入模型，可选：
   #   BAAI/bge-small-zh-v1.5    (33MB, ⭐推荐，原生中文)
-  #   intfloat/multilingual-e5-small  (118MB, 多语言效果更好)
-  #   paraphrase-multilingual-MiniLM-L12-v2  (470MB, 其他服务器在用)
+  #   BAAI/bge-m3               (更大，召回更好，需 reembed)
+  #   intfloat/multilingual-e5-small  (118MB, 多语言)
   embed_model: "BAAI/bge-small-zh-v1.5"
   chroma_dir: ".chroma_db"
+  collection_name: "knowledge_items"
+
+# ═══════════════════════════════════════════
+# 检索增强（v1.1.0）
+# ═══════════════════════════════════════════
+retrieval:
+  # RRF 融合常数（越大越平滑，默认 60）
+  rrf_k: 60
+  # 向量 / BM25 各取候选数（RRF 前）
+  vec_candidates: 30
+  bm25_candidates: 50
+
+  # 长文档分块（路径脑 brain_memory 自动跳过）
+  chunking:
+    enabled: true
+    # 超过该字符数才切块
+    min_chars: 1000
+    chunk_size: 500
+    overlap: 80
+
+  # CrossEncoder 重排序（首次请求会下载模型）
+  rerank:
+    enabled: true
+    model: "BAAI/bge-reranker-v2-m3"
+    # 先 RRF 取 top_n，再 rerank 到最终 n_results
+    top_n: 20
 
 # ═══════════════════════════════════════════
 # 脑记忆库（mb_* 工具专用）
 # 与知识库(kb_*)分离存储，独立目录，互不影响
 # ═══════════════════════════════════════════
 memory:
-  # 嵌入模型（一般和 engine.embed_model 保持一致）
   embed_model: "BAAI/bge-small-zh-v1.5"
-  # 存储目录
   chroma_dir: ".chroma_db_memory"
-  # 集合名
   collection_name: "brain_memory"
 
 # ═══════════════════════════════════════════
-# LightRAG 知识图谱增强（v3.0.0 新增）
+# LightRAG 知识图谱增强
 # 不开启不影响基础搜索功能
 # ═══════════════════════════════════════════
 lightrag:
-  # 是否启用知识图谱
-  #   true  = 开启，建图需 DeepSeek/Ollama API，首次启动较慢（加载模型）
-  #   false = 仅使用 ChromaDB 向量搜索
   enabled: false
-
-  # 图谱存储目录（相对于项目根目录）
   working_dir: ".lightrag_storage"
 
-  # LLM 配置（建图时提取实体关系用）
   llm:
-    # 后端类型: deepseek | ollama
     provider: deepseek
-    # DeepSeek API Key（推荐用环境变量引用）
-    # DeepSeek 使用标准 API 地址 https://api.deepseek.com/v1，无需配 base_url
     api_key: "${DEEPSEEK_API_KEY}"
-    # 模型名
-    model: deepseek-v4-flash
-    # ── Ollama 模式示例（注释掉上面 deepseek 配置，取消下面注释）──
-    # base_url: http://localhost:11434
-    # model: qwen2.5:7b
+    model: deepseek-chat
 
-  # 嵌入模型（CPU 即可，首次启动自动下载）
-  # 一般和 engine.embed_model 保持一致即可
-  embed_model: "intfloat/multilingual-e5-small"
+  # ⚠️ 建议与 engine.embed_model 保持一致
+  embed_model: "BAAI/bge-small-zh-v1.5"
 
-  # 检索参数
-  top_k: 10        # 每个查询返回的最大候选数
-  mode: mix        # 检索模式: local | global | mix
+  top_k: 10
+  mode: mix

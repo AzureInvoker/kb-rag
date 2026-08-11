@@ -1,7 +1,5 @@
 """
-核心引擎 — ChromaDB 向量库 + sentence-transformers 嵌入 + BM25 混合搜索
-
-通用版，支持多种文档类型（doc_type）。
+核心引擎 — ChromaDB 向量库 + sentence-transformers 嵌入 + BM25 + RRF + Rerank
 """
 
 import os
@@ -12,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import KnowledgeItem
+from .retrieval import Reranker, dedupe_by_parent, parent_id_from_meta, reciprocal_rank_fusion, split_content
 
 try:
     from .config import get_config
@@ -26,37 +25,69 @@ COLLECTION_NAME = cfg.collection_name
 
 logger = logging.getLogger("engine")
 
-
-# ── 向量库引擎 ──
+_CHROMA_RESERVED = {
+    "id", "doc_type", "title", "content", "tags", "metadata_json", "created_at",
+    "parent_id", "chunk_index", "is_chunk",
+}
 
 
 class VectorEngine:
     """ChromaDB 引擎，管理知识条目的向量化存储和检索"""
 
-    def __init__(self, chroma_dir=None, embed_model=None, collection_name=None):
+    def __init__(
+        self,
+        chroma_dir=None,
+        embed_model=None,
+        collection_name=None,
+        *,
+        enable_chunking: Optional[bool] = None,
+        enable_rerank: Optional[bool] = None,
+    ):
         self._chroma_dir = Path(chroma_dir) if chroma_dir else CHROMA_DIR
         self._embed_model = embed_model or EMBED_MODEL
         self._collection_name = collection_name or COLLECTION_NAME
         self._collection = None
         self._embedder = None
         self._init_lock = threading.Lock()
-        # BM25 缓存
+
+        _cfg = get_config()
+        self._enable_chunking = _cfg.chunk_enabled if enable_chunking is None else enable_chunking
+        self._enable_rerank = _cfg.rerank_enabled if enable_rerank is None else enable_rerank
+        self._chunk_min_chars = _cfg.chunk_min_chars
+        self._chunk_size = _cfg.chunk_size
+        self._chunk_overlap = _cfg.chunk_overlap
+        self._rrf_k = _cfg.rrf_k
+        self._vec_candidates = _cfg.vec_candidates
+        self._bm25_candidates = _cfg.bm25_candidates
+        self._rerank_top_n = _cfg.rerank_top_n
+        self._reranker = Reranker(_cfg.rerank_model) if self._enable_rerank else None
+
         self._bm25 = None
         self._bm25_metadata = None
         self._bm25_all_ids = None
+        self._bm25_documents = None
+        self._bm25_size = 0
+
+    def _invalidate_bm25(self) -> None:
+        self._bm25 = None
+        self._bm25_all_ids = None
+        self._bm25_documents = None
         self._bm25_size = 0
 
     def _lazy_init(self):
         if self._collection is not None:
             return
         with self._init_lock:
-            # 双重检查锁：拿到锁后再次检查
             if self._collection is not None:
                 return
             import chromadb
             from sentence_transformers import SentenceTransformer
 
-            logger.info(f"加载嵌入模型: {self._embed_model}  |  库: {self._chroma_dir} / {self._collection_name}")
+            logger.info(
+                "加载嵌入模型: %s  |  库: %s / %s (chunk=%s rerank=%s)",
+                self._embed_model, self._chroma_dir, self._collection_name,
+                self._enable_chunking, self._enable_rerank,
+            )
             self._embedder = SentenceTransformer(self._embed_model, device="cpu")
 
             client = chromadb.PersistentClient(path=str(self._chroma_dir))
@@ -64,21 +95,16 @@ class VectorEngine:
                 name=self._collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
-            logger.info(f"ChromaDB 就绪")
-
-            # ── 维度校验：防止嵌入模型与 ChromaDB 维度不匹配 ──
+            logger.info("ChromaDB 就绪")
             self._validate_dimension()
 
     def _validate_dimension(self):
-        """校验嵌入模型输出维度与 ChromaDB 存储的 embedding 维度一致"""
         try:
-            # 先看库有没有数据，没数据跳过校验（空库无所谓维度）
             existing = self._collection.get(limit=1, include=["embeddings"])
             if not existing.get("ids"):
                 logger.info("  库为空，跳过维度校验")
                 return
 
-            # 有数据 → 取模型维度 vs 库维度
             model_dim = self._embedder.get_sentence_embedding_dimension()
             stored_dim = len(existing["embeddings"][0])
             if model_dim != stored_dim:
@@ -87,7 +113,6 @@ class VectorEngine:
                     f"❌ 嵌入模型维度不匹配！\n"
                     f"   模型 {self._embed_model}: {model_dim} 维\n"
                     f"   库 {self._collection_name}:   {stored_dim} 维\n\n"
-                    f"   原因：ChromaDB 是用另一个模型建的，改模型后没重建。\n\n"
                     f"   修复命令：\n"
                     f"     uv run python -c \"from server.engine import get_engine; "
                     f"e = get_engine(); e.reembed()\"\n"
@@ -95,56 +120,40 @@ class VectorEngine:
                 )
                 logger.error(msg)
                 raise ValueError(msg)
-            logger.info(f"✅ 维度校验通过: 模型={model_dim}d, 库={stored_dim}d")
+            logger.info("✅ 维度校验通过: 模型=%dd, 库=%dd", model_dim, stored_dim)
         except Exception as e:
             if isinstance(e, ValueError):
                 raise
-            logger.warning(f"维度校验跳过（新库或无数据）: {e}")
+            logger.warning("维度校验跳过（新库或无数据）: %s", e)
 
     def reembed(self):
-        """
-        用当前模型重新嵌入所有已有数据（修复模型切换后的维度不匹配）。
-        自动备份旧库（带时间戳，不会覆写），安全可恢复。
-        """
         import shutil
-        from pathlib import Path
         import chromadb
         from sentence_transformers import SentenceTransformer
         from datetime import datetime
 
-        # 只加载模型（不连 ChromaDB，避免维度校验报错）
-        logger.warning(f"加载嵌入模型: {self._embed_model}")
+        logger.warning("加载嵌入模型: %s", self._embed_model)
         embedder = SentenceTransformer(self._embed_model, device="cpu")
-
         logger.warning("⚠️  开始重新嵌入所有数据...")
 
-        # 第1步：读取旧数据（所有操作之前，确保数据到手）
         old_client = chromadb.PersistentClient(path=str(self._chroma_dir))
-        old_cols = old_client.list_collections()
         all_data = {}
         total_items = 0
-        for col in old_cols:
+        for col in old_client.list_collections():
             all_data[col.name] = col.get(include=["documents", "metadatas"])
-            n = len(all_data[col.name]["ids"])
-            total_items += n
-            logger.info(f"  读取 collection '{col.name}': {n} 条")
+            total_items += len(all_data[col.name]["ids"])
+            logger.info("  读取 collection '%s': %d 条", col.name, len(all_data[col.name]["ids"]))
 
         if not all_data:
             logger.warning("  无数据，无需重建")
             return
 
-        # 第2步：带时间戳备份（永不覆写）
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = f"{self._chroma_dir}_bak_{ts}"
-        backup_p = Path(backup_dir)
+        backup_p = Path(f"{self._chroma_dir}_bak_{ts}")
         shutil.copytree(str(self._chroma_dir), str(backup_p))
-        logger.info(f"  💾 备份: {backup_p}")
-
-        # 第3步：删除旧库
         shutil.rmtree(str(self._chroma_dir))
-        logger.info(f"  🗑️  旧库已删除")
+        logger.info("  💾 备份: %s", backup_p)
 
-        # 第4步：用新模型重新嵌入并写入
         new_client = chromadb.PersistentClient(path=str(self._chroma_dir))
         for col_name, data in all_data.items():
             docs = data.get("documents") or []
@@ -152,27 +161,15 @@ class VectorEngine:
             ids = data.get("ids") or []
             if not docs:
                 continue
-            logger.info(f"  ⚡ 重嵌入 '{col_name}' ({len(docs)} 条)...")
+            logger.info("  ⚡ 重嵌入 '%s' (%d 条)...", col_name, len(docs))
             embs = embedder.encode(docs, show_progress_bar=True).tolist()
             new_col = new_client.get_or_create_collection(name=col_name)
-            new_col.add(
-                documents=docs,
-                metadatas=metas,
-                ids=ids,
-                embeddings=embs,
-            )
+            new_col.add(documents=docs, metadatas=metas, ids=ids, embeddings=embs)
 
-        # 重置引擎内部状态，重启服务后自动加载新库
         self._collection = None
         self._embedder = None
-        self._bm25 = None
-        self._bm25_all_ids = None
-        self._bm25_size = 0
-        logger.info(f"  ✅ reembed 完成！备份在 {backup_p}")
-        logger.info(f"  🔄 重启服务自动加载新库")
-
-        # 输出统计便于验证
-        logger.info(f"  共重建 {total_items} 条，模型维度 {embedder.get_sentence_embedding_dimension()}")
+        self._invalidate_bm25()
+        logger.info("  ✅ reembed 完成！共 %d 条，备份在 %s", total_items, backup_p)
 
     @property
     def collection(self):
@@ -184,98 +181,15 @@ class VectorEngine:
         self._lazy_init()
         return self._embedder
 
-    # ── 增删改 ──
-
-    def add(self, item: KnowledgeItem) -> str:
-        """添加单条知识条目，返回 ID"""
-        if not item.id:
-            item.id = item.gen_id()
-        text = item.get_embedding_text()
-        emb = self.embedder.encode([text]).tolist()
-
-        # metadata 中 tags 和 metadata 字段都转 JSON 字符串存入
-        self.collection.add(
-            ids=[item.id],
-            embeddings=emb,
-            metadatas=[{
-                "id": item.id,
-                "doc_type": item.doc_type,
-                "title": item.title,
-                "tags": json.dumps(item.tags, ensure_ascii=False),
-                "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
-                "created_at": item.created_at,
-            }],
-            documents=[text],
-        )
-        self._bm25 = None
-        return item.id
-
-    def add_many(self, items: list[KnowledgeItem]) -> int:
-        """批量添加，返回添加数量"""
-        if not items:
-            return 0
-        documents = []
-        ids = []
-        metadatas = []
-        for item in items:
-            if not item.id:
-                item.id = item.gen_id()
-            documents.append(item.get_embedding_text())
-            ids.append(item.id)
-            metadatas.append({
-                "id": item.id,
-                "doc_type": item.doc_type,
-                "title": item.title,
-                "tags": json.dumps(item.tags, ensure_ascii=False),
-                "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
-                "created_at": item.created_at,
-            })
-
-        batch_size = 32
-        for i in range(0, len(documents), batch_size):
-            batch_texts = documents[i:i + batch_size]
-            batch_emb = self.embedder.encode(batch_texts).tolist()
-            self.collection.add(
-                ids=ids[i:i + batch_size],
-                embeddings=batch_emb,
-                metadatas=metadatas[i:i + batch_size],
-                documents=batch_texts,
-            )
-        self._bm25 = None
-        return len(items)
-
-    def delete(self, item_id: str) -> bool:
-        """删除指定条目"""
+    @staticmethod
+    def _parse_tags(raw_tags) -> list:
         try:
-            self.collection.delete(ids=[item_id])
-            self._bm25 = None
-            return True
-        except Exception:
-            return False
-
-    def delete_many(self, doc_type: str = None) -> int:
-        """按 doc_type 批量删除"""
-        where = {}
-        if doc_type:
-            where["doc_type"] = doc_type
-        try:
-            existing = self.collection.get(where=where if where else None)
-            if existing["ids"]:
-                self.collection.delete(ids=existing["ids"])
-                self._bm25 = None
-            return len(existing["ids"])
-        except Exception:
-            return 0
+            return json.loads(raw_tags) if raw_tags else []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     @staticmethod
     def _extract_brain_meta(meta: dict) -> dict:
-        """从 ChromaDB metadata 中提取知识条目元数据，兼容嵌套和扁平两种存储格式。
-
-        engine.add() 写入时将 brain 字段嵌套在 metadata_json JSON 字符串内。
-        mb_remember.upsert 直写 collection.update() 时字段在顶层扁平存储。
-        合并逻辑：扁平字段优先（有非空/非零值时覆盖嵌套的同名字段）。
-        """
-        # 1. 从 metadata_json 解析嵌套数据
         nested = {}
         raw_json = meta.get("metadata_json")
         if isinstance(raw_json, str) and raw_json.strip():
@@ -286,177 +200,199 @@ class VectorEngine:
         if not isinstance(nested, dict):
             nested = {}
 
-        # 2. 扁平格式：去掉 ChromaDB 顶层保留字段
-        top_level_keys = {"id", "doc_type", "title", "content", "tags", "metadata_json", "created_at"}
-        flat = {k: v for k, v in meta.items() if k not in top_level_keys}
-
-        # 3. 扁平覆盖嵌套（只有扁平字段有 meaningful 值时）
-        result = dict(nested)  # 嵌套为基底
+        flat = {k: v for k, v in meta.items() if k not in _CHROMA_RESERVED}
+        result = dict(nested)
         for k, v in flat.items():
             if v is not None and v != "" and v != 0:
                 result[k] = v
         return result
 
-    def search(self, query: str, n_results: int = 10,
-               doc_type: str = None) -> list[dict]:
-        """
-        混合搜索（向量 0.6 + BM25 关键词 0.4）
+    @staticmethod
+    def _stored_content(meta: dict, doc_text: str) -> str:
+        stored = meta.get("content")
+        if isinstance(stored, str) and stored.strip():
+            return stored
+        return doc_text or ""
 
-        搜索流程：
-        1. 向量搜索：用 ChromaDB 做语义匹配
-        2. BM25 搜索：用 jieba 分词 + rank_bm25 做关键词精确匹配
-        3. 融合排序：min-max 归一化后加权合并
+    def _build_chroma_metadata(
+        self,
+        item: KnowledgeItem,
+        *,
+        parent_id: str,
+        chunk_index: int = 0,
+        is_chunk: bool = False,
+        full_content: str = "",
+    ) -> dict:
+        content = full_content or item.content
+        return {
+            "id": item.id,
+            "doc_type": item.doc_type,
+            "title": item.title,
+            "content": content,
+            "tags": json.dumps(item.tags, ensure_ascii=False),
+            "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
+            "created_at": item.created_at,
+            "parent_id": parent_id,
+            "chunk_index": int(chunk_index),
+            "is_chunk": bool(is_chunk),
+        }
 
-        参数:
-          query:      搜索关键词
-          n_results:  返回结果数量
-          doc_type:   按文档类型筛选 (如 "test_case")
+    def _add_single(
+        self,
+        item: KnowledgeItem,
+        *,
+        parent_id: str,
+        chunk_index: int = 0,
+        is_chunk: bool = False,
+        full_content: str = "",
+    ) -> str:
+        if not item.id:
+            item.id = item.gen_id()
+        text = item.get_embedding_text()
+        emb = self.embedder.encode([text]).tolist()
+        meta = self._build_chroma_metadata(
+            item,
+            parent_id=parent_id,
+            chunk_index=chunk_index,
+            is_chunk=is_chunk,
+            full_content=full_content,
+        )
+        self.collection.upsert(
+            ids=[item.id],
+            embeddings=emb,
+            metadatas=[meta],
+            documents=[text],
+        )
+        self._invalidate_bm25()
+        return item.id
 
-        返回: [{id, doc_type, title, tags, score, summary, ...}]
-        """
-        query_emb = self.embedder.encode([query]).tolist()
-
-        where_clause = None
-        if doc_type:
-            where_clause = {"doc_type": doc_type}
-
-        # 先 try query+where，失败则回退
+    def _delete_by_parent(self, parent_id: str) -> int:
         try:
-            vec_results = self.collection.query(
-                query_embeddings=query_emb,
-                n_results=n_results * 3,
-                where=where_clause,
-            )
+            existing = self.collection.get(where={"parent_id": parent_id})
+            ids = list(existing.get("ids") or [])
+            if parent_id not in ids:
+                probe = self.collection.get(ids=[parent_id])
+                if probe.get("ids"):
+                    ids.append(parent_id)
+            if not ids:
+                return 0
+            self.collection.delete(ids=ids)
+            self._invalidate_bm25()
+            return len(ids)
         except Exception:
-            vec_results = {"ids": [[]], "metadatas": [[]], "distances": [[]], "documents": [[]]}
+            return 0
 
-        # 构建 ID → 结果映射
-        hit_map = {}
-        if vec_results["ids"] and vec_results["ids"][0]:
-            for i, id_ in enumerate(vec_results["ids"][0]):
-                meta = vec_results["metadatas"][0][i]
-                dist = vec_results["distances"][0][i]
-                doc = vec_results["documents"][0][i] if vec_results["documents"] else ""
-                hit_map[id_] = {
-                    "meta": meta,
-                    "doc": doc,
-                    "vec_score": 1.0 - dist,
-                    "bm25_score": 0.0,
-                }
+    def add(self, item: KnowledgeItem) -> str:
+        parent_id = item.id or item.gen_id()
+        item.id = parent_id
+        full_content = item.content or ""
 
-        # BM25 关键词搜索
-        bm25_pairs = self._bm25_search(query, where_clause=where_clause)
-        for id_, bm25_score in bm25_pairs:
-            if id_ in hit_map:
-                hit_map[id_]["bm25_score"] = bm25_score
-            else:
-                # BM25 命中但向量没命中
-                try:
-                    doc_data = self.collection.get(ids=[id_])
-                    if doc_data["ids"]:
-                        meta = doc_data["metadatas"][0]
-                        doc = doc_data["documents"][0] if doc_data["documents"] else ""
-                        hit_map[id_] = {
-                            "meta": meta,
-                            "doc": doc,
-                            "vec_score": 0.0,
-                            "bm25_score": bm25_score,
-                        }
-                except Exception:
-                    pass
+        use_chunking = (
+            self._enable_chunking
+            and item.doc_type != "brain_memory"
+            and len(full_content) > self._chunk_min_chars
+        )
+        if not use_chunking:
+            self._delete_by_parent(parent_id)
+            return self._add_single(
+                item, parent_id=parent_id, full_content=full_content,
+            )
 
-        if not hit_map:
-            return []
+        chunks = split_content(full_content, self._chunk_size, self._chunk_overlap)
+        self._delete_by_parent(parent_id)
+        if len(chunks) <= 1:
+            return self._add_single(
+                item, parent_id=parent_id, full_content=full_content,
+            )
 
-        # 分数归一化 + 融合
-        bm25_all_zero = all(h["bm25_score"] == 0.0 for h in hit_map.values())
-        vec_scores = [h["vec_score"] for h in hit_map.values()]
-        bm25_scores = [h["bm25_score"] for h in hit_map.values()]
+        for i, chunk_text in enumerate(chunks):
+            chunk_item = KnowledgeItem(
+                id=f"{parent_id}_c{i}",
+                doc_type=item.doc_type,
+                title=item.title,
+                content=chunk_text,
+                metadata=item.metadata,
+                tags=item.tags,
+                created_at=item.created_at,
+            )
+            self._add_single(
+                chunk_item,
+                parent_id=parent_id,
+                chunk_index=i,
+                is_chunk=True,
+                full_content=full_content,
+            )
+        return parent_id
 
-        if bm25_scores and not bm25_all_zero:
-            vec_min, vec_max = min(vec_scores), max(vec_scores)
-            bm25_min, bm25_max = min(bm25_scores), max(bm25_scores)
-        else:
-            vec_min, vec_max = min(vec_scores), max(vec_scores)
-            bm25_min, bm25_max = 0, 1
+    def add_many(self, items: list[KnowledgeItem]) -> int:
+        if not items:
+            return 0
+        count = 0
+        for item in items:
+            self.add(item)
+            count += 1
+        return count
 
-        vec_range = vec_max - vec_min if vec_max > vec_min else 1.0
-        bm25_range = bm25_max - bm25_min if bm25_max > bm25_min else 1.0
+    def delete(self, item_id: str) -> bool:
+        deleted = self._delete_by_parent(item_id)
+        if deleted:
+            return True
+        try:
+            self.collection.delete(ids=[item_id])
+            self._invalidate_bm25()
+            return True
+        except Exception:
+            return False
 
-        results = []
-        for id_, data in hit_map.items():
-            norm_vec = (data["vec_score"] - vec_min) / vec_range
-            norm_bm25 = (data["bm25_score"] - bm25_min) / bm25_range if not bm25_all_zero else 0.0
+    def delete_many(self, doc_type: str = None) -> int:
+        where = {"doc_type": doc_type} if doc_type else None
+        try:
+            existing = self.collection.get(where=where)
+            ids = existing.get("ids") or []
+            if ids:
+                self.collection.delete(ids=ids)
+                self._invalidate_bm25()
+            return len(ids)
+        except Exception:
+            return 0
 
-            if bm25_all_zero:
-                final_score = norm_vec
-            else:
-                final_score = 0.6 * norm_vec + 0.4 * norm_bm25
-
-            meta = data["meta"]
-            doc_text = data["doc"]
-
-            # 解析 tags 和 metadata_json
-            raw_tags = meta.get("tags", "[]")
-            try:
-                tags = json.loads(raw_tags) if raw_tags else []
-            except (json.JSONDecodeError, TypeError):
-                tags = []
-
-            item_metadata = self._extract_brain_meta(meta)
-
-            results.append({
-                "id": id_,
-                "doc_type": meta.get("doc_type", ""),
-                "title": meta.get("title", ""),
-                "tags": tags,
-                "metadata": item_metadata,
-                "created_at": meta.get("created_at", ""),
-                "score": round(final_score, 4),
-                "summary": doc_text[:200] + "..." if len(doc_text) > 200 else doc_text,
-            })
-
-        results.sort(key=lambda x: -x["score"])
-        return results[:n_results]
+    def _bm25_corpus_text(self, meta: dict, doc_text: str) -> str:
+        title = meta.get("title", "")
+        doc_type = meta.get("doc_type", "")
+        tags_str = ", ".join(self._parse_tags(meta.get("tags", "[]")))
+        content = self._stored_content(meta, doc_text)
+        return f"{title} {doc_type} {tags_str} {content}".strip()
 
     def _bm25_search(self, query: str, where_clause: dict = None) -> list[tuple[str, float]]:
-        """
-        BM25 关键词搜索（内部方法）
-
-        使用 jieba 分词 + rank_bm25 对 title/doc_type/tags 做关键词匹配。
-        返回: [(id, score), ...] 按 score 降序
-        """
         import jieba
 
         all_docs = self.collection.get()
         if not all_docs["ids"]:
             return []
 
-        # 检查 BM25 缓存
         current_size = len(all_docs["ids"])
-        if (self._bm25 is not None and self._bm25_size == current_size
-                and self._bm25_all_ids == all_docs["ids"]):
+        if (
+            self._bm25 is not None
+            and self._bm25_size == current_size
+            and self._bm25_all_ids == all_docs["ids"]
+        ):
             bm25 = self._bm25
             metadata = self._bm25_metadata
             all_ids = self._bm25_all_ids
         else:
             from rank_bm25 import BM25Okapi
+
             corpus = []
-            for meta in all_docs["metadatas"]:
-                title = meta.get("title", "")
-                doc_type = meta.get("doc_type", "")
-                tags_raw = meta.get("tags", "[]")
-                try:
-                    tags_str = ", ".join(json.loads(tags_raw)) if tags_raw else ""
-                except (json.JSONDecodeError, TypeError):
-                    tags_str = ""
-                text = f"{title} {doc_type} {tags_str}"
-                tokens = jieba.lcut(text)[:200]
-                corpus.append(tokens)
+            documents = all_docs.get("documents") or []
+            for i, meta in enumerate(all_docs["metadatas"]):
+                doc_text = documents[i] if i < len(documents) else ""
+                text = self._bm25_corpus_text(meta, doc_text)
+                corpus.append(jieba.lcut(text)[:400])
             bm25 = BM25Okapi(corpus)
             self._bm25 = bm25
             self._bm25_metadata = all_docs["metadatas"]
             self._bm25_all_ids = all_docs["ids"]
+            self._bm25_documents = documents
             self._bm25_size = current_size
             metadata = all_docs["metadatas"]
             all_ids = all_docs["ids"]
@@ -466,53 +402,133 @@ class VectorEngine:
             return []
 
         scores = bm25.get_scores(query_tokens)
-
         results = []
-        for i in range(len(all_ids)):
+        for i, doc_id in enumerate(all_ids):
             if scores[i] <= 0:
                 continue
             if where_clause:
-                skip = False
-                for key, val in where_clause.items():
-                    if metadata[i].get(key) != val:
-                        skip = True
-                        break
+                skip = any(metadata[i].get(k) != v for k, v in where_clause.items())
                 if skip:
                     continue
-            results.append((all_ids[i], scores[i]))
+            results.append((doc_id, float(scores[i])))
 
         results.sort(key=lambda x: -x[1])
-        return results[:50]
+        return results[: self._bm25_candidates]
+
+    def _hit_to_result(self, hit_id: str, meta: dict, doc_text: str, score: float) -> dict:
+        full_content = self._stored_content(meta, doc_text)
+        parent_id = parent_id_from_meta(meta, hit_id)
+        is_chunk = bool(meta.get("is_chunk"))
+        summary_src = doc_text or full_content
+        return {
+            "id": parent_id if is_chunk else hit_id,
+            "parent_id": parent_id,
+            "doc_type": meta.get("doc_type", ""),
+            "title": meta.get("title", ""),
+            "tags": self._parse_tags(meta.get("tags", "[]")),
+            "metadata": self._extract_brain_meta(meta),
+            "created_at": meta.get("created_at", ""),
+            "score": round(float(score), 4),
+            "summary": summary_src[:200] + "..." if len(summary_src) > 200 else summary_src,
+            "content": full_content,
+            "rerank_text": f"{meta.get('title', '')}\n{summary_src[:1200]}",
+            "is_chunk": is_chunk,
+            "chunk_index": int(meta.get("chunk_index") or 0),
+        }
+
+    def search(self, query: str, n_results: int = 10, doc_type: str = None) -> list[dict]:
+        """RRF(向量, BM25) → 可选 Rerank → 按 parent 去重"""
+        query_emb = self.embedder.encode([query]).tolist()
+        where_clause = {"doc_type": doc_type} if doc_type else None
+
+        try:
+            vec_results = self.collection.query(
+                query_embeddings=query_emb,
+                n_results=max(self._vec_candidates, n_results * 3),
+                where=where_clause,
+            )
+        except Exception:
+            vec_results = {"ids": [[]], "metadatas": [[]], "distances": [[]], "documents": [[]]}
+
+        vec_ranked: list[str] = []
+        hit_cache: dict[str, dict] = {}
+        if vec_results["ids"] and vec_results["ids"][0]:
+            for i, hit_id in enumerate(vec_results["ids"][0]):
+                meta = vec_results["metadatas"][0][i]
+                doc = vec_results["documents"][0][i] if vec_results["documents"] else ""
+                vec_ranked.append(hit_id)
+                hit_cache[hit_id] = {"meta": meta, "doc": doc}
+
+        bm25_pairs = self._bm25_search(query, where_clause=where_clause)
+        bm25_ranked = [doc_id for doc_id, _ in bm25_pairs]
+        for doc_id, _ in bm25_pairs:
+            if doc_id in hit_cache:
+                continue
+            try:
+                doc_data = self.collection.get(ids=[doc_id])
+                if doc_data["ids"]:
+                    hit_cache[doc_id] = {
+                        "meta": doc_data["metadatas"][0],
+                        "doc": doc_data["documents"][0] if doc_data["documents"] else "",
+                    }
+            except Exception:
+                pass
+
+        if not vec_ranked and not bm25_ranked:
+            return []
+
+        rrf_scores = reciprocal_rank_fusion(
+            [vec_ranked, bm25_ranked],
+            k=self._rrf_k,
+        )
+        ranked_ids = sorted(rrf_scores.keys(), key=lambda i: -rrf_scores[i])
+        candidates: list[dict] = []
+        for hit_id in ranked_ids[: max(self._rerank_top_n, n_results * 3)]:
+            cached = hit_cache.get(hit_id)
+            if not cached:
+                continue
+            candidates.append(
+                self._hit_to_result(hit_id, cached["meta"], cached["doc"], rrf_scores[hit_id])
+            )
+
+        if self._reranker and candidates:
+            candidates = self._reranker.rerank(query, candidates, top_k=max(self._rerank_top_n, n_results))
+
+        deduped = dedupe_by_parent(candidates)
+        return deduped[:n_results]
 
     def get_by_id(self, item_id: str) -> Optional[dict]:
-        """按 ID 获取单条"""
         results = self.collection.get(ids=[item_id])
         if not results["ids"]:
-            return None
+            probe = self.collection.get(where={"parent_id": item_id}, limit=1)
+            if not probe.get("ids"):
+                return None
+            results = probe
+
         i = 0
         meta = results["metadatas"][i] if results["metadatas"] else {}
         doc = results["documents"][i] if results["documents"] else ""
+        parent_id = parent_id_from_meta(meta, results["ids"][i])
+        full_content = self._stored_content(meta, doc)
 
-        raw_tags = meta.get("tags", "[]")
-        try:
-            tags = json.loads(raw_tags) if raw_tags else []
-        except (json.JSONDecodeError, TypeError):
-            tags = []
-
-        item_metadata = self._extract_brain_meta(meta)
+        if meta.get("is_chunk") or results["ids"][i] != parent_id:
+            siblings = self.collection.get(where={"parent_id": parent_id})
+            for j, sm in enumerate(siblings.get("metadatas") or []):
+                full_content = self._stored_content(sm, siblings["documents"][j] if siblings.get("documents") else "")
+                if full_content:
+                    break
 
         return {
-            "id": item_id,
+            "id": parent_id,
             "doc_type": meta.get("doc_type", ""),
             "title": meta.get("title", ""),
-            "tags": tags,
-            "metadata": item_metadata,
+            "tags": self._parse_tags(meta.get("tags", "[]")),
+            "metadata": self._extract_brain_meta(meta),
             "created_at": meta.get("created_at", ""),
-            "content": doc,
+            "content": full_content,
         }
 
     def get_stats(self) -> dict:
-        """获取统计信息——按 doc_type 分布"""
         all_docs = self.collection.get()
         if not all_docs["ids"]:
             return {"total": 0, "by_type": {}}
@@ -527,71 +543,62 @@ class VectorEngine:
             "by_type": dict(sorted(by_type.items(), key=lambda x: -x[1])),
         }
 
-    def get_all(self, doc_type: str = None,
-                offset: int = 0, limit: int = 50) -> list[dict]:
-        """分页列出条目"""
-        where_clause = None
-        if doc_type:
-            where_clause = {"doc_type": doc_type}
-
-        results = self.collection.get(
-            where=where_clause,
-            offset=offset,
-            limit=limit,
-        )
+    def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:
+        where_clause = {"doc_type": doc_type} if doc_type else None
+        results = self.collection.get(where=where_clause, offset=offset, limit=limit)
         items = []
-        if results["ids"]:
-            for i, id_ in enumerate(results["ids"]):
-                meta = results["metadatas"][i]
-                raw_tags = meta.get("tags", "[]")
-                try:
-                    tags = json.loads(raw_tags) if raw_tags else []
-                except (json.JSONDecodeError, TypeError):
-                    tags = []
+        if not results["ids"]:
+            return items
 
-                item_metadata = self._extract_brain_meta(meta)
-                items.append({
-                    "id": id_,
-                    "doc_type": meta.get("doc_type", ""),
-                    "title": meta.get("title", ""),
-                    "tags": tags,
-                    "metadata": item_metadata,
-                    "created_at": meta.get("created_at", ""),
-                })
+        for i, hit_id in enumerate(results["ids"]):
+            meta = results["metadatas"][i]
+            doc = results["documents"][i] if results["documents"] else ""
+            if meta.get("is_chunk") and int(meta.get("chunk_index") or 0) > 0:
+                continue
+            items.append({
+                "id": parent_id_from_meta(meta, hit_id),
+                "doc_type": meta.get("doc_type", ""),
+                "title": meta.get("title", ""),
+                "tags": self._parse_tags(meta.get("tags", "[]")),
+                "metadata": self._extract_brain_meta(meta),
+                "created_at": meta.get("created_at", ""),
+                "content": self._stored_content(meta, doc),
+            })
         return items
 
     def get_all_texts(self) -> list[dict]:
-        """导出全量条目的原始文本和元数据（供 LightRAG 迁移用）"""
         all_docs = self.collection.get()
         if not all_docs["ids"]:
             return []
+
+        seen_parents: set[str] = set()
         results = []
-        for i, id_ in enumerate(all_docs["ids"]):
+        documents = all_docs.get("documents") or []
+        for i, hit_id in enumerate(all_docs["ids"]):
             meta = all_docs["metadatas"][i]
-            doc = all_docs["documents"][i] if all_docs["documents"] else ""
+            parent_id = parent_id_from_meta(meta, hit_id)
+            if parent_id in seen_parents:
+                continue
+            seen_parents.add(parent_id)
+            doc = documents[i] if i < len(documents) else ""
             results.append({
-                "id": id_,
+                "id": parent_id,
                 "title": meta.get("title", ""),
                 "doc_type": meta.get("doc_type", ""),
                 "tags": meta.get("tags", "[]"),
-                "text": doc,
+                "text": self._stored_content(meta, doc),
             })
         return results
 
     def count(self) -> int:
-        """快速获取总数"""
-        all_docs = self.collection.get()
-        return len(all_docs["ids"])
+        return len(self.collection.get().get("ids") or [])
 
     def count_by_type(self, doc_type: str = None) -> int:
-        """按文档类型统计条目数"""
         if not doc_type:
             return self.count()
         all_docs = self.collection.get(where={"doc_type": doc_type})
-        return len(all_docs["ids"]) if all_docs and all_docs.get("ids") else 0
+        return len(all_docs.get("ids") or [])
 
-
-# ── 单例 ──
 
 _engine_instance = None
 

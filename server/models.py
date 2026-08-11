@@ -38,11 +38,13 @@ class KnowledgeItem:
             parts.append(f"内容: {self.content[:800]}")
         return "\n".join(p for p in parts if p)
 
-    def get_bm25_text(self) -> str:
-        """生成用于 BM25 关键词搜索的文本（聚焦高信号字段）"""
+    def get_bm25_text(self, *, include_content: bool = True) -> str:
+        """生成用于 BM25 关键词搜索的文本（标题 + 类型 + 标签 + 正文）"""
         parts = [self.title, self.doc_type]
         if self.tags:
             parts.append(", ".join(self.tags))
+        if include_content and self.content:
+            parts.append(self.content)
         return " ".join(p for p in parts if p)
 
     def gen_id(self) -> str:

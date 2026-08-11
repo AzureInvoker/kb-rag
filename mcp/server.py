@@ -87,7 +87,7 @@ def main():
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "kb-rag-mcp", "version": "1.0.0"},
+                    "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
                 },
             })
         elif method == "notifications/initialized":
