@@ -171,7 +171,7 @@ def add_item(data: ItemCreate):
         item.id = item.gen_id()
     app.state.engine.add(item)
     if app.state.lightrag.is_available():
-        app.state.lightrag.insert([item.get_embedding_text()], ids=[item.id])
+        app.state.lightrag.insert([item.get_lightrag_text()], ids=[item.id])
     return {"id": item.id, "title": item.title, "doc_type": item.doc_type}
 
 
@@ -190,7 +190,7 @@ def add_items_batch(data: ItemBatchCreate):
         except Exception as e:
             errors.append({"index": i, "error": str(e)})
     if added and app.state.lightrag.is_available():
-        texts = [it.get_embedding_text() for it in added]
+        texts = [it.get_lightrag_text() for it in added]
         ids = [it.id for it in added]
         app.state.lightrag.insert(texts, ids=ids)
     return {

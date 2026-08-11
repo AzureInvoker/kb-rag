@@ -47,6 +47,18 @@ class KnowledgeItem:
             parts.append(self.content)
         return " ".join(p for p in parts if p)
 
+    def get_lightrag_text(self, *, max_chars: int = 12000) -> str:
+        """LightRAG 建图用全文（比 get_embedding_text 包含更多正文）。"""
+        parts = [
+            f"标题: {self.title}",
+            f"类型: {self.doc_type}",
+        ]
+        if self.tags:
+            parts.append(f"标签: {', '.join(self.tags)}")
+        if self.content:
+            parts.append(f"内容: {self.content[:max_chars]}")
+        return "\n".join(p for p in parts if p)
+
     def gen_id(self) -> str:
         """基于内容生成唯一 ID"""
         raw = f"{self.doc_type}:{self.title}:{self.content[:100]}:{self.created_at}"

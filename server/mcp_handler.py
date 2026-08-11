@@ -548,7 +548,10 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
     # ── kb_stats ──
     elif name == "kb_stats":
         stats = engine.get_stats()
-        text = f"## 📊 知识库统计\n\n总条目数: {stats['total']}\n\n"
+        text = f"## 📊 知识库统计\n\n文档数: {stats['total']}\n"
+        if stats.get("chunks") and stats["chunks"] != stats["total"]:
+            text += f"向量块数: {stats['chunks']}\n"
+        text += "\n"
         if stats.get("by_type"):
             text += "### 按类型\n\n"
             for dt, count in stats["by_type"].items():
@@ -565,7 +568,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
         item.id = item.gen_id()
         engine.add(item)
         if lightrag_engine.is_available():
-            lightrag_engine.insert([item.get_embedding_text()], ids=[item.id])
+            lightrag_engine.insert([item.get_lightrag_text()], ids=[item.id])
         return {
             "content": [{
                 "type": "text",
@@ -596,7 +599,7 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             except ValueError as e:
                 errors.append(f"第 {i+1} 条：{e}")
         if added and lightrag_engine.is_available():
-            texts = [it.get_embedding_text() for it in added]
+            texts = [it.get_lightrag_text() for it in added]
             ids = [it.id for it in added]
             lightrag_engine.insert(texts, ids=ids)
         summary = f"✅ 成功添加 {len(added)} 条"
@@ -1227,7 +1230,7 @@ async def async_handle_tool(name: str, args: dict, engine, lightrag_engine, mem_
     if name == "kb_add_batch":
         return await _async_add_batch(args, engine, lightrag_engine)
     # 其他工具直接走同步版（纯读取，不涉及 asyncio.run）
-    return handle_tool(name, args, engine, lightrag_engine)
+    return handle_tool(name, args, engine, lightrag_engine, mem_engine)
 
 
 async def _async_add(args: dict, engine, lightrag_engine) -> dict:
@@ -1239,7 +1242,7 @@ async def _async_add(args: dict, engine, lightrag_engine) -> dict:
     item.id = item.gen_id()
     engine.add(item)
     if lightrag_engine.is_available():
-        await lightrag_engine.async_insert([item.get_embedding_text()], ids=[item.id])
+        await lightrag_engine.async_insert([item.get_lightrag_text()], ids=[item.id])
     return {
         "content": [{
             "type": "text",
@@ -1271,7 +1274,7 @@ async def _async_add_batch(args: dict, engine, lightrag_engine) -> dict:
         except ValueError as e:
             errors.append(f"第 {i+1} 条：{e}")
     if added and lightrag_engine.is_available():
-        texts = [it.get_embedding_text() for it in added]
+        texts = [it.get_lightrag_text() for it in added]
         ids = [it.id for it in added]
         await lightrag_engine.async_insert(texts, ids=ids)
 

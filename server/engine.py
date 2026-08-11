@@ -27,7 +27,7 @@ logger = logging.getLogger("engine")
 
 _CHROMA_RESERVED = {
     "id", "doc_type", "title", "content", "tags", "metadata_json", "created_at",
-    "parent_id", "chunk_index", "is_chunk",
+    "parent_id", "chunk_index", "is_chunk", "parent_content",
 }
 
 
@@ -209,9 +209,10 @@ class VectorEngine:
 
     @staticmethod
     def _stored_content(meta: dict, doc_text: str) -> str:
-        stored = meta.get("content")
-        if isinstance(stored, str) and stored.strip():
-            return stored
+        for key in ("parent_content", "content"):
+            stored = meta.get(key)
+            if isinstance(stored, str) and stored.strip():
+                return stored
         return doc_text or ""
 
     def _build_chroma_metadata(
@@ -224,11 +225,13 @@ class VectorEngine:
         full_content: str = "",
     ) -> dict:
         content = full_content or item.content
+        store_parent_content = content if (not is_chunk or chunk_index == 0) else ""
         return {
             "id": item.id,
             "doc_type": item.doc_type,
             "title": item.title,
-            "content": content,
+            "content": store_parent_content,
+            "parent_content": store_parent_content,
             "tags": json.dumps(item.tags, ensure_ascii=False),
             "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
             "created_at": item.created_at,
@@ -248,8 +251,13 @@ class VectorEngine:
     ) -> str:
         if not item.id:
             item.id = item.gen_id()
-        text = item.get_embedding_text()
-        emb = self.embedder.encode([text]).tolist()
+        embed_text = item.get_embedding_text()
+        full = full_content or item.content
+        if is_chunk:
+            doc_store = embed_text
+        else:
+            doc_store = item.get_bm25_text()
+        emb = self.embedder.encode([embed_text]).tolist()
         meta = self._build_chroma_metadata(
             item,
             parent_id=parent_id,
@@ -261,7 +269,7 @@ class VectorEngine:
             ids=[item.id],
             embeddings=emb,
             metadatas=[meta],
-            documents=[text],
+            documents=[doc_store],
         )
         self._invalidate_bm25()
         return item.id
@@ -360,8 +368,11 @@ class VectorEngine:
         title = meta.get("title", "")
         doc_type = meta.get("doc_type", "")
         tags_str = ", ".join(self._parse_tags(meta.get("tags", "[]")))
-        content = self._stored_content(meta, doc_text)
-        return f"{title} {doc_type} {tags_str} {content}".strip()
+        if meta.get("is_chunk"):
+            body = doc_text
+        else:
+            body = self._stored_content(meta, doc_text)
+        return f"{title} {doc_type} {tags_str} {body}".strip()
 
     def _bm25_search(self, query: str, where_clause: dict = None) -> list[tuple[str, float]]:
         import jieba
@@ -492,7 +503,12 @@ class VectorEngine:
             )
 
         if self._reranker and candidates:
-            candidates = self._reranker.rerank(query, candidates, top_k=max(self._rerank_top_n, n_results))
+            try:
+                candidates = self._reranker.rerank(
+                    query, candidates, top_k=max(self._rerank_top_n, n_results),
+                )
+            except Exception as exc:
+                logger.warning("Reranker 失败，回退 RRF 排序: %s", exc)
 
         deduped = dedupe_by_parent(candidates)
         return deduped[:n_results]
@@ -531,16 +547,21 @@ class VectorEngine:
     def get_stats(self) -> dict:
         all_docs = self.collection.get()
         if not all_docs["ids"]:
-            return {"total": 0, "by_type": {}}
+            return {"total": 0, "by_type": {}, "chunks": 0}
 
-        by_type = {}
-        for meta in all_docs["metadatas"]:
+        parents: set[str] = set()
+        by_type: dict[str, set[str]] = {}
+        for i, hit_id in enumerate(all_docs["ids"]):
+            meta = all_docs["metadatas"][i]
+            pid = parent_id_from_meta(meta, hit_id)
+            parents.add(pid)
             dt = meta.get("doc_type", "unknown")
-            by_type[dt] = by_type.get(dt, 0) + 1
+            by_type.setdefault(dt, set()).add(pid)
 
         return {
-            "total": len(all_docs["ids"]),
-            "by_type": dict(sorted(by_type.items(), key=lambda x: -x[1])),
+            "total": len(parents),
+            "chunks": len(all_docs["ids"]),
+            "by_type": {dt: len(ids) for dt, ids in sorted(by_type.items(), key=lambda x: -len(x[1]))},
         }
 
     def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:

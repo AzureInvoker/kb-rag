@@ -118,7 +118,7 @@ def migrate():
     # 5. 同步到 LightRAG
     if lightrag.is_available():
         logger.info("  正在同步到 LightRAG 图谱...")
-        texts = [it.get_embedding_text() for it in items]
+        texts = [it.get_lightrag_text() for it in items]
         ids = [it.id for it in items]
         result = lightrag.insert(texts, ids=ids)
         if result.get("ok"):

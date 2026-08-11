@@ -265,6 +265,17 @@ def test_engine_add_and_search():
     assert stats["total"] >= 1
     assert stats["by_type"]["test_case"] >= 1
 
+    # BM25 应能命中正文里的词（非标题）
+    item2 = KnowledgeItem(
+        title="隐藏关键词文档",
+        doc_type="doc",
+        content="正文里有个特殊词 special_token_xyz",
+        created_at="2025-01-02",
+    )
+    engine.add(item2)
+    bm25_hits = engine.search("special_token_xyz", n_results=5)
+    assert any(r["title"] == "隐藏关键词文档" for r in bm25_hits)
+
     # get_by_id
     got = engine.get_by_id(item_id)
     assert got is not None
