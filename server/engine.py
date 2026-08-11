@@ -564,27 +564,56 @@ class VectorEngine:
             "by_type": {dt: len(ids) for dt, ids in sorted(by_type.items(), key=lambda x: -len(x[1]))},
         }
 
-    def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:
+    def _parent_documents(self, doc_type: str = None) -> list[dict]:
+        """按逻辑文档（parent_id）去重后的完整列表，用于浏览分页。"""
         where_clause = {"doc_type": doc_type} if doc_type else None
-        results = self.collection.get(where=where_clause, offset=offset, limit=limit)
-        items = []
-        if not results["ids"]:
-            return items
+        all_docs = self.collection.get(where=where_clause)
+        if not all_docs["ids"]:
+            return []
 
-        for i, hit_id in enumerate(results["ids"]):
-            meta = results["metadatas"][i]
-            doc = results["documents"][i] if results["documents"] else ""
-            if meta.get("is_chunk") and int(meta.get("chunk_index") or 0) > 0:
+        parents: dict[str, tuple[int, dict]] = {}
+        documents = all_docs.get("documents") or []
+
+        for i, hit_id in enumerate(all_docs["ids"]):
+            meta = all_docs["metadatas"][i]
+            is_chunk = bool(meta.get("is_chunk"))
+            chunk_idx = int(meta.get("chunk_index") or 0)
+            if is_chunk and chunk_idx > 0:
                 continue
-            items.append({
-                "id": parent_id_from_meta(meta, hit_id),
+
+            pid = parent_id_from_meta(meta, hit_id)
+            doc = documents[i] if i < len(documents) else ""
+            priority = 1 if is_chunk else 0
+            item = {
+                "id": pid,
                 "doc_type": meta.get("doc_type", ""),
                 "title": meta.get("title", ""),
                 "tags": self._parse_tags(meta.get("tags", "[]")),
                 "metadata": self._extract_brain_meta(meta),
                 "created_at": meta.get("created_at", ""),
                 "content": self._stored_content(meta, doc),
-            })
+            }
+            prev = parents.get(pid)
+            if prev is None or priority < prev[0]:
+                parents[pid] = (priority, item)
+
+        items = [row for _, row in parents.values()]
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return items
+
+    def list_parents(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> tuple[list[dict], int]:
+        """按文档分页浏览，返回 (当前页条目, 文档总数)。"""
+        all_items = self._parent_documents(doc_type)
+        total = len(all_items)
+        if limit <= 0:
+            return [], total
+        return all_items[offset: offset + limit], total
+
+    def count_parents(self, doc_type: str = None) -> int:
+        return len(self._parent_documents(doc_type))
+
+    def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:
+        items, _ = self.list_parents(doc_type=doc_type, offset=offset, limit=limit)
         return items
 
     def get_all_texts(self) -> list[dict]:
@@ -612,13 +641,10 @@ class VectorEngine:
         return results
 
     def count(self) -> int:
-        return len(self.collection.get().get("ids") or [])
+        return self.count_parents()
 
     def count_by_type(self, doc_type: str = None) -> int:
-        if not doc_type:
-            return self.count()
-        all_docs = self.collection.get(where={"doc_type": doc_type})
-        return len(all_docs.get("ids") or [])
+        return self.count_parents(doc_type)
 
 
 _engine_instance = None

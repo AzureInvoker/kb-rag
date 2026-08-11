@@ -347,7 +347,9 @@ async function loadBrowse() {
       el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无数据</div>';
       return;
     }
-    let html = `<div class="text-muted mb-8">共 ${data.total} 条，显示第 ${browsePage * PAGE_SIZE + 1}-${browsePage * PAGE_SIZE + data.items.length} 条</div>`;
+    const start = (data.offset ?? browsePage * PAGE_SIZE) + 1;
+    const end = (data.offset ?? browsePage * PAGE_SIZE) + data.items.length;
+    let html = `<div class="text-muted mb-8">共 ${data.total} 条，显示 ${start}-${end}</div>`;
     html += '<table class="data-table"><thead><tr><th>标题</th><th>类型</th><th>标签</th><th>时间</th></tr></thead><tbody>';
     for (const item of data.items) {
       const tags = item.tags && item.tags.length ? item.tags.join(', ') : '-';

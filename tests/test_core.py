@@ -325,6 +325,48 @@ def test_chunk_split_and_dedupe():
     print("  ✅ test_chunk_split_and_dedupe")
 
 
+def test_list_parents_paginates_documents_not_chunks():
+    import os
+    import shutil
+    import tempfile
+
+    tmpdir = tempfile.mkdtemp()
+    os.environ["KB_CHROMA_DIR"] = tmpdir
+    os.environ["KB_COLLECTION_NAME"] = "test_parents"
+    os.environ["KB_RERANK_ENABLED"] = "false"
+    os.environ["KB_CHUNK_ENABLED"] = "true"
+    os.environ["KB_LIGHTRAG_ENABLED"] = "false"
+
+    import config as cfg_mod
+    cfg_mod._config_cache = None
+
+    from server.engine import VectorEngine
+    from server.models import KnowledgeItem
+
+    engine = VectorEngine(enable_chunking=True, enable_rerank=False)
+    for i in range(3):
+        engine.add(KnowledgeItem(
+            title=f"长文档{i}",
+            doc_type="doc",
+            content="章节 " * 800,
+            created_at=f"2025-01-0{i+1}",
+        ))
+
+    assert engine.count_parents() == 3
+    page1, total = engine.list_parents(offset=0, limit=2)
+    assert total == 3
+    assert len(page1) == 2
+    page2, total2 = engine.list_parents(offset=2, limit=2)
+    assert total2 == 3
+    assert len(page2) == 1
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    for key in ["KB_CHROMA_DIR", "KB_COLLECTION_NAME", "KB_RERANK_ENABLED", "KB_CHUNK_ENABLED", "KB_LIGHTRAG_ENABLED"]:
+        os.environ.pop(key, None)
+    cfg_mod._config_cache = None
+    print("  ✅ test_list_parents_paginates_documents_not_chunks")
+
+
 # ── 运行 ──
 
 if __name__ == "__main__":
@@ -346,6 +388,7 @@ if __name__ == "__main__":
         test_engine_add_and_search,
         test_rrf_fusion,
         test_chunk_split_and_dedupe,
+        test_list_parents_paginates_documents_not_chunks,
     ]
 
     passed = 0

@@ -525,9 +525,10 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             offset=int(args.get("offset", 0)),
             limit=min(int(args.get("limit", 50)), 200),
         )
+        total = target.count_parents(args.get("doc_type"))
         if not items:
             return {"content": [{"type": "text", "text": "暂无条目（或筛选条件无匹配）"}]}
-        text = f"## 📋 条目列表（共 {len(items)} 条）\n\n"
+        text = f"## 📋 条目列表（共 {total} 条，本页 {len(items)} 条）\n\n"
         for i, item in enumerate(items):
             tags_str = f" [{', '.join(item['tags'])}]" if item.get("tags") else ""
             text += f"{i+1}. **{item['title']}**\n"

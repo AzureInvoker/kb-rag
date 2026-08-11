@@ -150,8 +150,8 @@ def list_items(
 ):
     """列表/筛选"""
     items = app.state.engine.get_all(doc_type=doc_type, offset=offset, limit=limit)
-    total = app.state.engine.count_by_type(doc_type)
-    return {"total": total, "returned": len(items), "items": items}
+    total = app.state.engine.count_parents(doc_type)
+    return {"total": total, "returned": len(items), "offset": offset, "limit": limit, "items": items}
 
 
 @app.get("/api/v1/items/{item_id}")
