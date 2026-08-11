@@ -342,6 +342,10 @@ async function loadBrowse() {
     const params = new URLSearchParams({ offset: browsePage * PAGE_SIZE, limit: PAGE_SIZE });
     if (docType) params.set('doc_type', docType);
     const res = await fetch(`${API}/api/v1/items?${params}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
     const data = await res.json();
     if (!data.items || data.items.length === 0) {
       el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无数据</div>';
@@ -415,6 +419,10 @@ async function loadStats() {
   el.innerHTML = '<div class="loading">加载中...</div>';
   try {
     const res = await fetch(`${API}/api/v1/stats`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
     const data = await res.json();
     let html = `<div class="stat-card"><div class="stat-num">${data.total}</div><div class="text-muted">总条目数</div></div>`;
     if (data.by_type) {
