@@ -44,6 +44,7 @@ class VectorEngine:
         enable_rerank: Optional[bool] = None,
     ):
         self._chroma_dir = Path(chroma_dir) if chroma_dir else CHROMA_DIR
+        self._chroma_dir = Path(self._chroma_dir).resolve()
         self._embed_model = embed_model or EMBED_MODEL
         self._collection_name = collection_name or COLLECTION_NAME
         self._collection = None
@@ -74,6 +75,29 @@ class VectorEngine:
         self._bm25_documents = None
         self._bm25_size = 0
 
+    def _prepare_chroma_dir(self) -> None:
+        """确保 ChromaDB 目录存在且可写（清空库后首次访问需要）。"""
+        self._chroma_dir.mkdir(parents=True, exist_ok=True)
+        if not os.access(self._chroma_dir, os.W_OK):
+            raise PermissionError(f"ChromaDB 目录不可写: {self._chroma_dir}")
+
+    def _create_chroma_client(self):
+        import chromadb
+
+        self._prepare_chroma_dir()
+        try:
+            return chromadb.PersistentClient(path=str(self._chroma_dir))
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "unable to open database file" not in msg:
+                raise
+            logger.warning("ChromaDB 打开失败，尝试清理损坏的 sqlite 后重建: %s", self._chroma_dir)
+            for name in ("chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm"):
+                stale = self._chroma_dir / name
+                if stale.exists():
+                    stale.unlink()
+            return chromadb.PersistentClient(path=str(self._chroma_dir))
+
     def _lazy_init(self):
         if self._collection is not None:
             return
@@ -90,7 +114,7 @@ class VectorEngine:
             )
             self._embedder = SentenceTransformer(self._embed_model, device="cpu")
 
-            client = chromadb.PersistentClient(path=str(self._chroma_dir))
+            client = self._create_chroma_client()
             self._collection = client.get_or_create_collection(
                 name=self._collection_name,
                 metadata={"hnsw:space": "cosine"},

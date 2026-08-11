@@ -149,9 +149,13 @@ def list_items(
     limit: int = Query(default=50, le=200),
 ):
     """列表/筛选"""
-    items = app.state.engine.get_all(doc_type=doc_type, offset=offset, limit=limit)
-    total = app.state.engine.count_parents(doc_type)
-    return {"total": total, "returned": len(items), "offset": offset, "limit": limit, "items": items}
+    try:
+        items = app.state.engine.get_all(doc_type=doc_type, offset=offset, limit=limit)
+        total = app.state.engine.count_parents(doc_type)
+        return {"total": total, "returned": len(items), "offset": offset, "limit": limit, "items": items}
+    except Exception as exc:
+        logger.exception("list_items failed")
+        raise HTTPException(status_code=503, detail=f"知识库未就绪: {exc}") from exc
 
 
 @app.get("/api/v1/items/{item_id}")
@@ -220,7 +224,11 @@ def delete_items_bulk(doc_type: str = Query(..., description="要删除的文档
 @app.get("/api/v1/stats")
 def stats():
     """统计信息"""
-    return app.state.engine.get_stats()
+    try:
+        return app.state.engine.get_stats()
+    except Exception as exc:
+        logger.exception("stats failed")
+        raise HTTPException(status_code=503, detail=f"知识库未就绪: {exc}") from exc
 
 
 @app.get("/api/v1/graph/status")

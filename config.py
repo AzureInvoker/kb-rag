@@ -70,14 +70,14 @@ class Config:
         chroma_dir = engine_cfg.get("chroma_dir", ".chroma_db")
         chroma_env = os.getenv("KB_CHROMA_DIR", os.getenv("TC_CHROMA_DIR"))
         if chroma_env:
-            self.chroma_dir = Path(chroma_env)
+            self.chroma_dir = Path(chroma_env).expanduser().resolve()
         else:
             data_dir_env = os.getenv("KB_DATA_DIR", os.getenv("TC_DATA_DIR"))
             if data_dir_env:
-                data_dir = Path(data_dir_env)
+                data_dir = Path(data_dir_env).expanduser().resolve()
             else:
                 data_dir = _find_project_root()
-            self.chroma_dir = data_dir / chroma_dir
+            self.chroma_dir = (data_dir / chroma_dir).resolve()
 
         # ── 检索增强 ──
         self.rrf_k = int(retrieval_cfg.get("rrf_k", 60))
@@ -109,14 +109,14 @@ class Config:
         memory_chroma_dir = memory_cfg.get("chroma_dir", ".chroma_db_memory")
         memory_env = os.getenv("KB_MEMORY_CHROMA_DIR")
         if memory_env:
-            self.memory_chroma_dir = Path(memory_env)
+            self.memory_chroma_dir = Path(memory_env).expanduser().resolve()
         else:
             data_dir_env = os.getenv("KB_DATA_DIR", os.getenv("TC_DATA_DIR"))
             if data_dir_env:
-                data_dir = Path(data_dir_env)
+                data_dir = Path(data_dir_env).expanduser().resolve()
             else:
                 data_dir = _find_project_root()
-            self.memory_chroma_dir = data_dir / memory_chroma_dir
+            self.memory_chroma_dir = (data_dir / memory_chroma_dir).resolve()
 
         # ── LightRAG ──
         _lr_enabled = os.getenv("KB_LIGHTRAG_ENABLED", os.getenv("TC_LIGHTRAG_ENABLED"))
