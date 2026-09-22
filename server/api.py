@@ -8,6 +8,8 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse

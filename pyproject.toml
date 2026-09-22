@@ -21,8 +21,8 @@ dependencies = [
 [project.scripts]
 kb-rag-api = "server.api:app"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
