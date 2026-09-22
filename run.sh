@@ -48,9 +48,9 @@ case "${1:-help}" in
     fi
     ;;
   restart)
-    $0 stop
+    bash "$0" stop
     sleep 1
-    $0 start
+    bash "$0" start
     ;;
   test)
     echo "🧪 运行测试..."

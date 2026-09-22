@@ -129,6 +129,7 @@ class Config:
         self.lightrag_embed_model = lightrag_cfg.get("embed_model", self.embed_model)
         self.lightrag_top_k = lightrag_cfg.get("top_k", 20)
         self.lightrag_mode = lightrag_cfg.get("mode", "mix")
+        self.lightrag_max_graph_nodes = int(os.getenv("KB_LIGHTRAG_MAX_NODES", lightrag_cfg.get("max_graph_nodes", 10000)))
 
         # ── LLM ──
         self.llm_provider = os.getenv("KB_LLM_PROVIDER", os.getenv("TC_LLM_PROVIDER",

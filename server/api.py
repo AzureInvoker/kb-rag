@@ -255,11 +255,11 @@ async def graph_search(
 
 
 @app.get("/api/v1/graph/data")
-async def graph_data():
+async def graph_data(max_nodes: Optional[int] = Query(default=None, ge=1, le=50000, description="最大节点数")):
     """获取图谱完整数据（节点+关系），供前端可视化"""
     if not app.state.lightrag.is_available():
         raise HTTPException(status_code=503, detail="LightRAG 图谱未启用或初始化失败")
-    result = await app.state.lightrag.async_get_graph_data()
+    result = await app.state.lightrag.async_get_graph_data(max_nodes=max_nodes)
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("message", "获取图谱数据失败"))
     return result

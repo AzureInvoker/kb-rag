@@ -72,3 +72,5 @@ lightrag:
 
   top_k: 10
   mode: mix
+  # 图谱最大节点检索/展示上限（解除底层 1000 默认限制）
+  max_graph_nodes: 10000

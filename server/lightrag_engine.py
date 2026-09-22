@@ -183,6 +183,7 @@ class LightRAGEngine:
                 chunk_overlap_token_size=100,
                 top_k=self.cfg.lightrag_top_k,
                 max_parallel_insert=2,
+                max_graph_nodes=self.cfg.lightrag_max_graph_nodes,
             )
 
             self._QueryParam = QueryParam
@@ -241,12 +242,26 @@ class LightRAGEngine:
         """异步插入（从 async MCP handler 中直接 await）"""
         if not self.is_available():
             return {"ok": False, "message": self._error or "LightRAG 不可用"}
+        # 过滤极短或空文本，避免 LLM 提取无意义噪音节点与浪费 Token
+        valid_pairs = []
+        for idx, t in enumerate(texts):
+            clean_t = (t or "").strip()
+            if len(clean_t) >= 15:  # 至少 15 个有效字符
+                item_id = ids[idx] if ids and idx < len(ids) else None
+                valid_pairs.append((clean_t, item_id))
+
+        if not valid_pairs:
+            return {"ok": True, "message": "文本过短或为空，跳过图谱抽取", "track_id": None}
+
+        filter_texts = [p[0] for p in valid_pairs]
+        filter_ids = [p[1] for p in valid_pairs] if ids else None
+
         await self._ensure_storages_async()
         if not self._ready:
             return {"ok": False, "message": self._error or "存储初始化失败"}
         try:
-            track_id = await self._rag.ainsert(texts, ids=ids)
-            return {"ok": True, "message": f"成功插入 {len(texts)} 条", "track_id": track_id}
+            track_id = await self._rag.ainsert(filter_texts, ids=filter_ids)
+            return {"ok": True, "message": f"成功插入 {len(filter_texts)} 条", "track_id": track_id}
         except Exception as e:
             logger.error(f"LightRAG async_insert 失败: {e}")
             return {"ok": False, "message": str(e)}
@@ -254,14 +269,26 @@ class LightRAGEngine:
     def insert(self, texts: list[str], ids: list[str] = None) -> dict:
         if not self.is_available():
             return {"ok": False, "message": self._error or "LightRAG 不可用"}
+        valid_pairs = []
+        for idx, t in enumerate(texts):
+            clean_t = (t or "").strip()
+            if len(clean_t) >= 15:
+                item_id = ids[idx] if ids and idx < len(ids) else None
+                valid_pairs.append((clean_t, item_id))
+
+        if not valid_pairs:
+            return {"ok": True, "message": "文本过短或为空，跳过图谱抽取", "track_id": None}
+
+        filter_texts = [p[0] for p in valid_pairs]
+        filter_ids = [p[1] for p in valid_pairs] if ids else None
         try:
             import asyncio
 
             async def _do_insert():
-                return await self._rag.insert(texts, ids=ids)
+                return await self._rag.insert(filter_texts, ids=filter_ids)
 
             track_id = asyncio.run(_do_insert())
-            return {"ok": True, "message": f"成功插入 {len(texts)} 条", "track_id": track_id}
+            return {"ok": True, "message": f"成功插入 {len(filter_texts)} 条", "track_id": track_id}
         except Exception as e:
             logger.error(f"LightRAG insert 失败: {e}")
             return {"ok": False, "message": str(e)}
@@ -343,7 +370,7 @@ class LightRAGEngine:
             async def _fetch_status():
                 try:
                     status = await self._rag.get_processing_status()
-                    graph = await self._rag.get_knowledge_graph("*")
+                    graph = await self._rag.get_knowledge_graph("*", max_nodes=self.cfg.lightrag_max_graph_nodes)
                     return status, graph
                 except Exception as e:
                     return None, {"error": str(e)}
@@ -379,7 +406,7 @@ class LightRAGEngine:
             # 降级：至少返回启用/就绪信息
             return {"enabled": True, "ready": True, "message": str(e)}
 
-    async def async_get_graph_data(self) -> dict:
+    async def async_get_graph_data(self, max_nodes: Optional[int] = None) -> dict:
         """异步获取图谱完整数据（节点+关系），供前端可视化"""
         if not self.is_available():
             return {"ok": False, "message": self._error or "LightRAG 不可用", "nodes": [], "edges": []}
@@ -387,7 +414,8 @@ class LightRAGEngine:
         if not self._ready:
             return {"ok": False, "message": self._error or "存储初始化失败", "nodes": [], "edges": []}
         try:
-            graph = await self._rag.get_knowledge_graph("*")
+            limit_nodes = max_nodes or self.cfg.lightrag_max_graph_nodes
+            graph = await self._rag.get_knowledge_graph("*", max_nodes=limit_nodes)
             nodes = []
             edges = []
             if graph:

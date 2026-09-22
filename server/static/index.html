@@ -487,12 +487,13 @@ function renderGraph(canvas, nodes, edges, detailEl) {
   let W = canvas.width, H = canvas.height;
 
   // ── Force params（适配大图） ──
-  const REPULSION = 4000;
+  const isHugeGraph = nodes.length > 500;
+  const REPULSION = isHugeGraph ? 2000 : 4000;
   const ATTRACTION = 0.003;
   const DAMPING = 0.90;
   const CENTER_FORCE = 0.002;
-  const EDGE_LENGTH = 140;
-  const COOLDOWN_FRAMES = 300;  // 最多跑 300 帧后停下来
+  const EDGE_LENGTH = isHugeGraph ? 90 : 140;
+  const COOLDOWN_FRAMES = isHugeGraph ? 150 : 300;  // 节点多时适当减少模拟帧数，防止卡顿
 
   // ── Build node map ──
   const nodeList = nodes.map(n => ({
