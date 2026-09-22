@@ -79,15 +79,21 @@ class Reranker:
         if not candidates:
             return []
         self._lazy_init()
+        # 限制重排候选数量不超过 10，文本截断至 800 字符，避免 CPU 阻塞数秒
+        max_cands = min(len(candidates), 10)
+        cands_to_score = candidates[:max_cands]
         pairs = [
-            (query, f"{c.get('title', '')}\n{c.get('rerank_text', c.get('summary', ''))}"[:2000])
-            for c in candidates
+            (query, f"{c.get('title', '')}\n{c.get('rerank_text', c.get('summary', ''))}"[:800])
+            for c in cands_to_score
         ]
         scores = self._model.predict(pairs)
         ranked = []
-        for i, cand in enumerate(candidates):
+        for i, cand in enumerate(cands_to_score):
             row = dict(cand)
             row["score"] = round(float(scores[i]), 4)
             ranked.append(row)
         ranked.sort(key=lambda x: -float(x["score"]))
+        # 补充未参与重排的候选（排在后面）
+        if len(candidates) > max_cands:
+            ranked.extend(candidates[max_cands:])
         return ranked[:top_k]

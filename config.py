@@ -97,9 +97,9 @@ class Config:
         if _rerank_env is not None:
             self.rerank_enabled = _rerank_env.lower() in ("1", "true", "yes")
         else:
-            self.rerank_enabled = bool(rerank_cfg.get("enabled", True))
+            self.rerank_enabled = bool(rerank_cfg.get("enabled", False))
         self.rerank_model = rerank_cfg.get("model", "BAAI/bge-reranker-v2-m3")
-        self.rerank_top_n = int(rerank_cfg.get("top_n", 20))
+        self.rerank_top_n = int(rerank_cfg.get("top_n", 10))
 
         # ── 脑记忆库 ──
         memory_cfg = file_config.get("memory", {}) if file_config else {}

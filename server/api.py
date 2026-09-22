@@ -125,13 +125,14 @@ def health():
 
 
 @app.get("/api/v1/search")
-def search(
+async def search(
     query: str = Query(..., description="搜索关键词"),
     n_results: int = Query(default=10, le=20),
     doc_type: str = Query(default=None, description="文档类型筛选"),
 ):
     """语义搜索"""
-    results = app.state.engine.search(
+    results = await asyncio.to_thread(
+        app.state.engine.search,
         query=query,
         n_results=n_results,
         doc_type=doc_type,
@@ -143,15 +144,15 @@ def search(
 
 
 @app.get("/api/v1/items")
-def list_items(
+async def list_items(
     doc_type: str = Query(default=None, description="按文档类型筛选"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     """列表/筛选"""
     try:
-        items = app.state.engine.get_all(doc_type=doc_type, offset=offset, limit=limit)
-        total = app.state.engine.count_parents(doc_type)
+        items = await asyncio.to_thread(app.state.engine.get_all, doc_type=doc_type, offset=offset, limit=limit)
+        total = await asyncio.to_thread(app.state.engine.count_parents, doc_type)
         return {"total": total, "returned": len(items), "offset": offset, "limit": limit, "items": items}
     except Exception as exc:
         logger.exception("list_items failed")
@@ -159,9 +160,9 @@ def list_items(
 
 
 @app.get("/api/v1/items/{item_id}")
-def get_item(item_id: str):
+async def get_item(item_id: str):
     """获取详情"""
-    item = app.state.engine.get_by_id(item_id)
+    item = await asyncio.to_thread(app.state.engine.get_by_id, item_id)
     if not item:
         raise HTTPException(status_code=404, detail=f"条目 {item_id} 不存在")
     return item
@@ -446,7 +447,7 @@ async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query
                          "kb_add", "kb_add_batch"):
             result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
         else:
-            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
+            result = await asyncio.to_thread(handle_tool, tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
 
         resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
@@ -495,7 +496,7 @@ async def mcp_direct(msg: MCPMessage):
                          "kb_add", "kb_add_batch"):
             result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
         else:
-            result = handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
+            result = await asyncio.to_thread(handle_tool, tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
 
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 

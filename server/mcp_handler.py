@@ -682,8 +682,8 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
                         full = engine.get_by_id(r["id"])
                         if full and full.get("content"):
                             content = full["content"]
-                    if len(content) > 4000:
-                        content = content[:4000] + "\n... [内容截断，超出 4000 字符]"
+                    if len(content) > 2000:
+                        content = content[:2000] + "\n... [内容截断，超出 2000 字符，可用 kb_get 调阅完整内容]"
                     text += f"> {content}\n\n"
         else:
             text += "无可用的向量搜索结果\n\n"
@@ -1325,7 +1325,30 @@ async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> d
             return {"content": [{"type": "text", "text": "请提供搜索关键词"}]}
         n_results = min(int(args.get("n_results", 5)), 20)
         summary_only = args.get("summary_only", False)
-        chroma_results = engine.search(query=query, n_results=n_results, doc_type=args.get("doc_type"))
+        # 并行执行向量搜索与图谱搜索（图谱设置 3 秒超时熔断）
+        import asyncio
+
+        tasks = [asyncio.to_thread(engine.search, query=query, n_results=n_results, doc_type=args.get("doc_type"))]
+        has_graph = lightrag_engine.is_available()
+        if has_graph:
+            tasks.append(asyncio.wait_for(lightrag_engine.async_search(query, n_results), timeout=3.0))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        chroma_res = results[0]
+        if isinstance(chroma_res, Exception):
+            logger.warning("kb_agentic_search 向量检索异常: %s", chroma_res)
+            chroma_results = []
+        else:
+            chroma_results = chroma_res or []
+
+        graph_result = {"ok": False}
+        if has_graph and len(results) > 1:
+            g_res = results[1]
+            if isinstance(g_res, Exception):
+                logger.warning("kb_agentic_search 图谱检索超时或异常（自动熔断）: %s", g_res)
+            elif isinstance(g_res, dict):
+                graph_result = g_res
+
         text = f"## 🔍 自适应检索「{query}」\n\n"
         if chroma_results:
             text += f"### 📋 向量匹配结果（{len(chroma_results)} 条）\n\n"
@@ -1335,20 +1358,19 @@ async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> d
                     text += f"> 摘要: {r.get('summary', '')}\n\n"
                 else:
                     content = r.get("summary", "")
-                    full = engine.get_by_id(r["id"])
+                    full = await asyncio.to_thread(engine.get_by_id, r["id"])
                     if full and full.get("content"):
                         content = full["content"]
-                    if len(content) > 4000:
-                        content = content[:4000] + "\n... [内容截断，超出 4000 字符]"
+                    if len(content) > 2000:
+                        content = content[:2000] + "\n... [内容截断，超出 2000 字符，可用 kb_get 调阅完整内容]"
                     text += f"> {content}\n\n"
         else:
             text += "无可用的向量搜索结果\n\n"
-        if lightrag_engine.is_available():
-            graph_result = await lightrag_engine.async_search(query, n_results)
-            if graph_result.get("ok") and graph_result.get("entities"):
-                text += f"### 🕸️ 图谱增强（{len(graph_result['entities'])} 实体）\n"
-                for e in graph_result["entities"][:5]:
-                    text += f"- {e['name']}\n"
+
+        if graph_result.get("ok") and graph_result.get("entities"):
+            text += f"### 🕸️ 图谱增强（{len(graph_result['entities'])} 实体）\n"
+            for e in graph_result["entities"][:5]:
+                text += f"- {e['name']}\n"
         return {"content": [{"type": "text", "text": text.strip()}]}
 
     elif name == "kb_graph_status":

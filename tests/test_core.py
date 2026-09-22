@@ -287,6 +287,7 @@ def test_engine_add_and_search():
 
     # delete
     assert engine.delete(item_id) == True
+    assert engine.delete(item2.id) == True
     assert engine.get_by_id(item_id) is None
 
     # 清理
@@ -345,7 +346,7 @@ def test_list_parents_paginates_documents_not_chunks():
 
     engine = VectorEngine(enable_chunking=True, enable_rerank=False)
     for i in range(3):
-        engine.add(KnowledgeItem(
+        res_id = engine.add(KnowledgeItem(
             title=f"长文档{i}",
             doc_type="doc",
             content="章节 " * 800,

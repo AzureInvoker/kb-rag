@@ -54,7 +54,7 @@ class VectorEngine:
         _cfg = get_config()
         self._enable_chunking = _cfg.chunk_enabled if enable_chunking is None else enable_chunking
         self._enable_rerank = _cfg.rerank_enabled if enable_rerank is None else enable_rerank
-        self._chunk_min_chars = _cfg.chunk_min_chars
+        self._chunk_min_chars = 1000 if _cfg is None else _cfg.chunk_min_chars
         self._chunk_size = _cfg.chunk_size
         self._chunk_overlap = _cfg.chunk_overlap
         self._rrf_k = _cfg.rrf_k
@@ -68,12 +68,39 @@ class VectorEngine:
         self._bm25_all_ids = None
         self._bm25_documents = None
         self._bm25_size = 0
+        self._bm25_lock = threading.Lock()
+        self._embed_cache: dict[str, list[float]] = {}
+        self._embed_cache_lock = threading.Lock()
+        self._embed_cache_max = 512
+
+    def count_parents(self, doc_type: str = None) -> int:
+        return len(self._parent_documents(doc_type))
 
     def _invalidate_bm25(self) -> None:
-        self._bm25 = None
-        self._bm25_all_ids = None
-        self._bm25_documents = None
-        self._bm25_size = 0
+        with getattr(self, "_bm25_lock", threading.Lock()):
+            self._bm25 = None
+            self._bm25_all_ids = None
+            self._bm25_documents = None
+            self._bm25_metadata = None
+            self._bm25_size = 0
+
+    def _encode_query(self, query: str) -> list[float]:
+        q = (query or "").strip()
+        if not q:
+            return []
+        with self._embed_cache_lock:
+            cached = self._embed_cache.get(q)
+            if cached is not None:
+                return cached
+        emb = self.embedder.encode([q]).tolist()[0]
+        with self._embed_cache_lock:
+            if len(self._embed_cache) >= self._embed_cache_max:
+                # 简单淘汰一半
+                keys = list(self._embed_cache.keys())[: self._embed_cache_max // 2]
+                for k in keys:
+                    self._embed_cache.pop(k, None)
+            self._embed_cache[q] = emb
+        return emb
 
     def _prepare_chroma_dir(self) -> None:
         """确保 ChromaDB 目录存在且可写（清空库后首次访问需要）。"""
@@ -401,36 +428,32 @@ class VectorEngine:
     def _bm25_search(self, query: str, where_clause: dict = None) -> list[tuple[str, float]]:
         import jieba
 
-        all_docs = self.collection.get()
-        if not all_docs["ids"]:
-            return []
+        with self._bm25_lock:
+            if self._bm25 is None:
+                all_docs = self.collection.get()
+                if not all_docs["ids"]:
+                    return []
+                from rank_bm25 import BM25Okapi
 
-        current_size = len(all_docs["ids"])
-        if (
-            self._bm25 is not None
-            and self._bm25_size == current_size
-            and self._bm25_all_ids == all_docs["ids"]
-        ):
+                corpus = []
+                documents = all_docs.get("documents") or []
+                metas = all_docs.get("metadatas") or []
+                all_ids = all_docs.get("ids") or []
+                for i, meta in enumerate(metas):
+                    doc_text = documents[i] if i < len(documents) else ""
+                    text = self._bm25_corpus_text(meta, doc_text)
+                    corpus.append(jieba.lcut(text)[:400])
+                if not corpus:
+                    return []
+                self._bm25 = BM25Okapi(corpus)
+                self._bm25_metadata = metas
+                self._bm25_all_ids = all_ids
+                self._bm25_documents = documents
+                self._bm25_size = len(all_ids)
+
             bm25 = self._bm25
             metadata = self._bm25_metadata
             all_ids = self._bm25_all_ids
-        else:
-            from rank_bm25 import BM25Okapi
-
-            corpus = []
-            documents = all_docs.get("documents") or []
-            for i, meta in enumerate(all_docs["metadatas"]):
-                doc_text = documents[i] if i < len(documents) else ""
-                text = self._bm25_corpus_text(meta, doc_text)
-                corpus.append(jieba.lcut(text)[:400])
-            bm25 = BM25Okapi(corpus)
-            self._bm25 = bm25
-            self._bm25_metadata = all_docs["metadatas"]
-            self._bm25_all_ids = all_docs["ids"]
-            self._bm25_documents = documents
-            self._bm25_size = current_size
-            metadata = all_docs["metadatas"]
-            all_ids = all_docs["ids"]
 
         query_tokens = jieba.lcut(query)
         if not query_tokens:
@@ -473,12 +496,12 @@ class VectorEngine:
 
     def search(self, query: str, n_results: int = 10, doc_type: str = None) -> list[dict]:
         """RRF(向量, BM25) → 可选 Rerank → 按 parent 去重"""
-        query_emb = self.embedder.encode([query]).tolist()
+        query_emb = self._encode_query(query)
         where_clause = {"doc_type": doc_type} if doc_type else None
 
         try:
             vec_results = self.collection.query(
-                query_embeddings=query_emb,
+                query_embeddings=[query_emb] if query_emb else None,
                 n_results=max(self._vec_candidates, n_results * 3),
                 where=where_clause,
             )
@@ -632,9 +655,6 @@ class VectorEngine:
         if limit <= 0:
             return [], total
         return all_items[offset: offset + limit], total
-
-    def count_parents(self, doc_type: str = None) -> int:
-        return len(self._parent_documents(doc_type))
 
     def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:
         items, _ = self.list_parents(doc_type=doc_type, offset=offset, limit=limit)

@@ -38,12 +38,12 @@ retrieval:
     chunk_size: 500
     overlap: 80
 
-  # CrossEncoder 重排序（首次请求会下载模型）
+  # CrossEncoder 重排序（CPU 环境建议关闭以获得 <50ms 极速检索；开启首次请求会下载模型）
   rerank:
-    enabled: true
+    enabled: false
     model: "BAAI/bge-reranker-v2-m3"
     # 先 RRF 取 top_n，再 rerank 到最终 n_results
-    top_n: 20
+    top_n: 10
 
 # ═══════════════════════════════════════════
 # 脑记忆库（mb_* 工具专用）
