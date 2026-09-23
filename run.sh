@@ -4,7 +4,7 @@ export PATH="$HOME/.local/bin:$PATH"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 # 从 config.yaml 读取端口
-KB_PORT=$(uv run python3 -c "
+KB_PORT=$(.venv/bin/python3 -c "
 import yaml
 with open('config.yaml') as f:
     cfg = yaml.safe_load(f)
@@ -27,7 +27,7 @@ case "${1:-help}" in
         sleep 1
       fi
     fi
-    nohup uv run uvicorn server.api:app --host 0.0.0.0 --port $KB_PORT > /tmp/kb-rag.log 2>&1 &
+    nohup .venv/bin/uvicorn server.api:app --host 0.0.0.0 --port $KB_PORT > /tmp/kb-rag.log 2>&1 &
     PID=$!
     echo "$PID" > /tmp/kb-rag.pid
     for i in $(seq 1 15); do
@@ -61,7 +61,7 @@ case "${1:-help}" in
     ;;
   test)
     echo "🧪 运行测试..."
-    uv run python3 -m pytest tests/ -v 2>/dev/null || uv run python3 tests/test_core.py
+    .venv/bin/python3 -m pytest tests/ -v 2>/dev/null || .venv/bin/python3 tests/test_core.py
     ;;
   update)
     echo "🔄 拉取最新代码..."
@@ -74,10 +74,10 @@ case "${1:-help}" in
     if [ "$OLD_HASH" != "$NEW_HASH" ]; then
       if git diff "$OLD_HASH".."$NEW_HASH" -- pyproject.toml | grep -q .; then
         echo "📦 检测到依赖变更，同步中..."
-        uv sync && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
+        uv pip install --default-index http://mirrors.momo.com/pypi/simple/ --python .venv/bin/python -r pyproject.toml && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
       elif git diff "$OLD_HASH".."$NEW_HASH" -- requirements.txt | grep -q .; then
         echo "📦 检测到依赖变更（requirements.txt），安装中..."
-        uv pip install -r requirements.txt && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
+        .venv/bin/pip install -r requirements.txt && echo "✅ 依赖更新完成" || echo "⚠️ 依赖更新失败"
       else
         echo "✅ 已是最新，无需更新依赖"
       fi
