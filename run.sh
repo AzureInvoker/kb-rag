@@ -1,8 +1,14 @@
 #!/bin/bash
 cd "$(dirname "$0")"
+export PATH="$HOME/.local/bin:$PATH"
 
 # 从 config.yaml 读取端口
-KB_PORT=$(python3 -c "
+KB_PORT=$(uv run python3 -c "
+import yaml
+with open('config.yaml') as f:
+    cfg = yaml.safe_load(f)
+print(cfg.get('api', {}).get('port', 8766))
+" 2>/dev/null || python3 -c "
 import yaml
 with open('config.yaml') as f:
     cfg = yaml.safe_load(f)
