@@ -1,6 +1,7 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/bin:$PATH"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 # 从 config.yaml 读取端口
 KB_PORT=$(uv run python3 -c "
