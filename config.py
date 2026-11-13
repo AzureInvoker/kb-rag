@@ -55,6 +55,7 @@ class Config:
         rerank_cfg = retrieval_cfg.get("rerank", {}) if retrieval_cfg else {}
         lightrag_cfg = file_config.get("lightrag", {}) if file_config else {}
         llm_cfg = lightrag_cfg.get("llm", {}) if lightrag_cfg else {}
+        governance_cfg = file_config.get("governance", {}) if file_config else {}
 
         # ── API ──
         self.api_host = os.getenv("KB_API_HOST", os.getenv("TC_API_HOST",
@@ -141,6 +142,18 @@ class Config:
                                          llm_cfg.get("base_url", "http://localhost:11434")))
         self.llm_model = os.getenv("KB_LLM_MODEL", os.getenv("TC_LLM_MODEL",
                                    llm_cfg.get("model", "deepseek-chat")))
+
+        # ── 治理 / 新鲜度 ──
+        sla = governance_cfg.get("freshness_sla_days") or {}
+        self.freshness_sla_days = {
+            "rule": int(sla.get("rule", 60)),
+            "test_case": int(sla.get("test_case", 90)),
+            "doc": int(sla.get("doc", 120)),
+            "ui_control": int(sla.get("ui_control", 60)),
+        }
+        self.archive_after_stale_days = int(governance_cfg.get("archive_after_stale_days", 180))
+        self.auto_curated_penalty = float(governance_cfg.get("auto_curated_penalty", 0.5))
+        self.stale_penalty = float(governance_cfg.get("stale_penalty", 0.85))
 
 
 def get_config() -> Config:

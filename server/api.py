@@ -97,14 +97,34 @@ class SearchRequest(BaseModel):
     query: str = Field(..., description="搜索关键词")
     n_results: int = Field(default=10, le=20, description="返回结果数量")
     doc_type: str = Field(default=None, description="按文档类型筛选")
+    game: Optional[str] = Field(default=None)
+    app: Optional[str] = Field(default=None)
+    category: Optional[str] = Field(default=None)
+    include_retired: bool = Field(default=False)
 
 
 class ItemCreate(BaseModel):
     title: str = Field(..., description="标题")
-    doc_type: str = Field(default="doc", description="文档类型")
+    doc_type: str = Field(default="doc", description="文档类型: doc|test_case|rule|ui_control")
     content: str = Field(default="", description="正文内容")
-    metadata: dict = Field(default={}, description="类型专属字段")
-    tags: list[str] = Field(default=[], description="标签列表")
+    metadata: dict = Field(default_factory=dict, description="类型专属字段")
+    tags: list[str] = Field(default_factory=list, description="标签列表")
+    category: str = Field(default="", description="业务域")
+    game: str = Field(default="", description="游戏")
+    app: str = Field(default="", description="应用（ui_control 必填）")
+    governance_status: str = Field(default="published")
+
+
+class ItemUpdate(BaseModel):
+    title: Optional[str] = None
+    doc_type: Optional[str] = None
+    content: Optional[str] = None
+    metadata: Optional[dict] = None
+    tags: Optional[list[str]] = None
+    category: Optional[str] = None
+    game: Optional[str] = None
+    app: Optional[str] = None
+    governance_status: Optional[str] = None
 
 
 class ItemBatchCreate(BaseModel):
@@ -131,13 +151,21 @@ async def search(
     query: str = Query(..., description="搜索关键词"),
     n_results: int = Query(default=10, le=20),
     doc_type: str = Query(default=None, description="文档类型筛选"),
+    game: Optional[str] = Query(default=None),
+    app: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    include_retired: bool = Query(default=False),
 ):
     """语义搜索"""
     results = await asyncio.to_thread(
         app.state.engine.search,
-        query=query,
-        n_results=n_results,
-        doc_type=doc_type,
+        query,
+        n_results,
+        doc_type,
+        game=game,
+        app=app,
+        category=category,
+        include_retired=include_retired,
     )
     # 默认不返回 brain_memory（只有主动筛选才看记忆）
     if not doc_type:
@@ -150,11 +178,25 @@ async def list_items(
     doc_type: str = Query(default=None, description="按文档类型筛选"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
+    game: Optional[str] = Query(default=None),
+    app: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    governance_status: Optional[str] = Query(default=None),
+    include_retired: bool = Query(default=True),
 ):
     """列表/筛选"""
     try:
-        items = await asyncio.to_thread(app.state.engine.get_all, doc_type=doc_type, offset=offset, limit=limit)
-        total = await asyncio.to_thread(app.state.engine.count_parents, doc_type)
+        items, total = await asyncio.to_thread(
+            app.state.engine.list_parents,
+            doc_type,
+            offset,
+            limit,
+            game=game,
+            app=app,
+            category=category,
+            governance_status=governance_status,
+            include_retired=include_retired,
+        )
         return {"total": total, "returned": len(items), "offset": offset, "limit": limit, "items": items}
     except Exception as exc:
         logger.exception("list_items failed")
@@ -173,18 +215,55 @@ async def get_item(item_id: str):
 @app.post("/api/v1/items", status_code=201)
 def add_item(data: ItemCreate):
     """添加单条"""
-    item = KnowledgeItem_from_pydantic(data)
+    from .taxonomy import should_index_graph
+    try:
+        item = KnowledgeItem_from_pydantic(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not item.id:
         item.id = item.gen_id()
-    app.state.engine.add(item)
-    if app.state.lightrag.is_available():
+    try:
+        app.state.engine.add(item)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if should_index_graph(item.doc_type) and app.state.lightrag.is_available():
         app.state.lightrag.insert([item.get_lightrag_text()], ids=[item.id])
-    return {"id": item.id, "title": item.title, "doc_type": item.doc_type}
+    return {"id": item.id, "title": item.title, "doc_type": item.doc_type, "app": item.app}
+
+
+@app.patch("/api/v1/items/{item_id}")
+def patch_item(item_id: str, data: ItemUpdate):
+    """更新条目"""
+    payload = {k: v for k, v in data.model_dump().items() if v is not None}
+    try:
+        updated = app.state.engine.update(item_id, **payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"条目 {item_id} 不存在")
+    return updated
+
+
+@app.post("/api/v1/items/{item_id}/deprecate")
+def deprecate_item(item_id: str):
+    updated = app.state.engine.set_status(item_id, "deprecated")
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"条目 {item_id} 不存在")
+    return updated
+
+
+@app.post("/api/v1/items/{item_id}/reverify")
+def reverify_item(item_id: str):
+    updated = app.state.engine.set_status(item_id, "published", refresh_verify=True)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"条目 {item_id} 不存在")
+    return updated
 
 
 @app.post("/api/v1/items/batch", status_code=201)
 def add_items_batch(data: ItemBatchCreate):
     """批量添加"""
+    from .taxonomy import should_index_graph
     added = []
     errors = []
     for i, d in enumerate(data.items):
@@ -196,9 +275,10 @@ def add_items_batch(data: ItemBatchCreate):
             added.append(item)
         except Exception as e:
             errors.append({"index": i, "error": str(e)})
-    if added and app.state.lightrag.is_available():
-        texts = [it.get_lightrag_text() for it in added]
-        ids = [it.id for it in added]
+    graph_items = [it for it in added if should_index_graph(it.doc_type)]
+    if graph_items and app.state.lightrag.is_available():
+        texts = [it.get_lightrag_text() for it in graph_items]
+        ids = [it.id for it in graph_items]
         app.state.lightrag.insert(texts, ids=ids)
     return {
         "added": len(added),
@@ -257,11 +337,14 @@ async def graph_search(
 
 
 @app.get("/api/v1/graph/data")
-async def graph_data(max_nodes: Optional[int] = Query(default=None, ge=1, le=50000, description="最大节点数")):
-    """获取图谱完整数据（节点+关系），供前端可视化"""
+async def graph_data(
+    query: Optional[str] = Query(default=None, description="实体/关键词；留空或 * 为有限节点概览，建议按关键词拉子图"),
+    max_nodes: Optional[int] = Query(default=150, ge=1, le=2000, description="最大节点数（默认150，避免全量）"),
+):
+    """按关键词获取图谱子图（节点+关系），供前端可视化。默认不全量加载。"""
     if not app.state.lightrag.is_available():
         raise HTTPException(status_code=503, detail="LightRAG 图谱未启用或初始化失败")
-    result = await app.state.lightrag.async_get_graph_data(max_nodes=max_nodes)
+    result = await app.state.lightrag.async_get_graph_data(max_nodes=max_nodes, query=query)
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("message", "获取图谱数据失败"))
     return result
@@ -274,19 +357,32 @@ async def graph_data(max_nodes: Optional[int] = Query(default=None, ge=1, le=500
 def memory_items(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
+    sort_by: str = Query(default="time", description="排序：time=添加/更新时间倒序（默认）；tries=尝试次数倒序"),
 ):
-    """脑记忆列表/分页"""
+    """脑记忆列表/分页（默认按时间倒序）"""
     mem = app.state.mem_engine
-    results = mem.collection.get(
-        where={"doc_type": "brain_memory"},
-        offset=offset,
-        limit=limit,
-    )
-    items = _fmt_memory_items(results)
-    # 总数
     all_mem = mem.collection.get(where={"doc_type": "brain_memory"})
-    total = len(all_mem["ids"]) if all_mem["ids"] else 0
-    return {"total": total, "returned": len(items), "items": items}
+    items = _fmt_memory_items(all_mem)
+    sort_key = (sort_by or "time").strip().lower()
+    if sort_key == "tries":
+        items.sort(key=lambda x: int((x.get("metadata") or {}).get("tries") or 0), reverse=True)
+    else:
+        # 时间倒序：优先 updated_at，其次 created_at
+        def _time_key(x: dict) -> str:
+            meta = x.get("metadata") or {}
+            return meta.get("updated_at") or x.get("created_at") or ""
+
+        items.sort(key=_time_key, reverse=True)
+    total = len(items)
+    page = items[offset : offset + limit]
+    return {
+        "total": total,
+        "returned": len(page),
+        "offset": offset,
+        "limit": limit,
+        "sort_by": "tries" if sort_key == "tries" else "time",
+        "items": page,
+    }
 
 
 @app.get("/api/v1/memory/search")
@@ -345,7 +441,7 @@ def _fmt_memory_item(meta: dict, doc: str = "", id_: str = "") -> dict:
             "updated_at": brain.get("updated_at", ""),
         },
         "doc_type": "brain_memory",
-        "created_at": meta.get("updated_at", ""),
+        "created_at": meta.get("created_at") or brain.get("updated_at") or meta.get("updated_at", ""),
     }
 
 
@@ -520,11 +616,25 @@ if _os.path.isdir(_static_path):
 def KnowledgeItem_from_pydantic(data) -> "KnowledgeItem":
     """从 Pydantic 模型创建 KnowledgeItem"""
     from .models import KnowledgeItem
-    return KnowledgeItem(
+    from .taxonomy import compute_next_verify_at, require_ui_control_app
+
+    meta = dict(data.metadata or {})
+    app = getattr(data, "app", "") or meta.get("app", "")
+    game = getattr(data, "game", "") or meta.get("game", "")
+    category = getattr(data, "category", "") or meta.get("category", "")
+    doc_type = data.doc_type or "doc"
+    app = require_ui_control_app(doc_type, app, meta)
+    item = KnowledgeItem(
         title=_clean_text(data.title),
-        doc_type=data.doc_type or "doc",
+        doc_type=doc_type,
         content=_clean_text(data.content or ""),
-        metadata=data.metadata or {},
+        metadata=meta,
         tags=_clean_list(data.tags or []),
         created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        category=_clean_text(category or ""),
+        game=_clean_text(game or ""),
+        app=_clean_text(app or ""),
+        governance_status=getattr(data, "governance_status", None) or "published",
     )
+    item.next_verify_at = compute_next_verify_at(item.doc_type, app.state.cfg.freshness_sla_days)
+    return item

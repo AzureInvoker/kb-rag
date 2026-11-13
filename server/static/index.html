@@ -6,55 +6,69 @@
 <title>KB-RAG 通用知识库</title>
 <style>
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --surface2: #1c2333;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text2: #8b949e;
-    --accent: #58a6ff;
+    --bg: #0b0f14;
+    --surface: #141a22;
+    --surface2: #1a2330;
+    --border: #2a3441;
+    --text: #e8eef5;
+    --text2: #8b97a8;
+    --accent: #5b9fd4;
+    --accent-soft: rgba(91, 159, 212, 0.14);
     --green: #3fb950;
     --orange: #d29922;
     --red: #f85149;
-    --radius: 8px;
-    --font: 'Segoe UI', -apple-system, sans-serif;
+    --radius: 10px;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: var(--bg);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, rgba(91, 159, 212, 0.12), transparent 55%),
+      radial-gradient(900px 400px at 90% 0%, rgba(63, 185, 80, 0.06), transparent 50%),
+      var(--bg);
     color: var(--text);
     font-family: var(--font);
     font-size: 14px;
     line-height: 1.6;
     min-height: 100vh;
   }
-  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  .container { max-width: 1140px; margin: 0 auto; padding: 24px 20px 48px; }
 
   /* Header */
   .header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 16px 0; border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
   }
-  .header h1 { font-size: 20px; font-weight: 600; }
+  .header h1 { font-size: 18px; font-weight: 650; letter-spacing: 0.02em; }
   .header .badge {
-    background: var(--accent); color: #000; padding: 2px 10px;
-    border-radius: 12px; font-size: 11px; font-weight: 600;
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid rgba(91, 159, 212, 0.35);
+    padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
   }
 
   /* Tabs */
-  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+  .tabs {
+    display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap;
+    padding: 6px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
   .tab {
-    padding: 8px 20px; border-radius: var(--radius); cursor: pointer;
-    background: var(--surface); border: 1px solid var(--border);
+    padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    background: transparent; border: 1px solid transparent;
     color: var(--text2); font-size: 13px; transition: all 0.15s;
   }
   .tab:hover { background: var(--surface2); color: var(--text); }
-  .tab.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  .tab.active {
+    background: var(--accent-soft); color: var(--accent);
+    border-color: rgba(91, 159, 212, 0.35); font-weight: 600;
+  }
 
   /* Panels */
   .panel { display: none; }
-  .panel.active { display: block; }
+  .panel.active { display: block; animation: fadeIn 0.18s ease; }
 
   /* Form elements */
   input, select, textarea {
@@ -77,8 +91,8 @@
     background: var(--surface); color: var(--text); transition: all 0.15s;
   }
   .btn:hover { background: var(--surface2); }
-  .btn-primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
-  .btn-primary:hover { filter: brightness(1.15); }
+  .btn-primary { background: var(--accent); color: #0b0f14; border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover { filter: brightness(1.1); }
   .btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
 
   /* Search */
@@ -89,11 +103,14 @@
   /* Results */
   .result-item {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 14px; margin-bottom: 8px;
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px;
+    transition: border-color 0.15s, background 0.15s;
   }
+  .result-item:hover { border-color: rgba(91, 159, 212, 0.45); background: var(--surface2); }
   .result-item .title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
   .result-item .title .type-tag {
-    display: inline-block; background: var(--surface2); color: var(--text2);
+    display: inline-block; background: var(--accent-soft); color: var(--accent);
+    border: 1px solid rgba(91, 159, 212, 0.28);
     font-size: 11px; padding: 1px 8px; border-radius: 10px; margin-left: 8px;
   }
   .result-item .meta { color: var(--text2); font-size: 12px; margin-bottom: 6px; }
@@ -104,21 +121,65 @@
   }
 
   /* Table for browse */
-  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
   .data-table th, .data-table td {
-    text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border);
     font-size: 13px;
   }
-  .data-table th { color: var(--text2); font-weight: 500; }
+  .data-table th { color: var(--text2); font-weight: 500; background: var(--surface2); }
+  .data-table tr:last-child td { border-bottom: none; }
 
   /* Stats */
   .stat-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+    box-shadow: var(--shadow);
   }
   .stat-card .stat-num { font-size: 32px; font-weight: 700; color: var(--accent); }
   .stat-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
   .stat-bar { height: 8px; border-radius: 4px; background: var(--accent); }
+
+  /* Memory / Graph toolbar */
+  .toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 14px; padding: 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .toolbar input, .toolbar select { width: auto; min-width: 0; }
+  .toolbar .grow { flex: 1; min-width: 180px; }
+  .hint {
+    font-size: 12px; color: var(--text2); padding: 10px 12px;
+    background: var(--accent-soft); border: 1px dashed rgba(91, 159, 212, 0.35);
+    border-radius: var(--radius); margin-bottom: 12px;
+  }
+  .mem-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px; margin-bottom: 10px;
+    transition: border-color 0.15s;
+  }
+  .mem-card:hover { border-color: rgba(91, 159, 212, 0.4); }
+  .mem-card .mem-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .mem-card .pleasure { font-size: 12px; font-weight: 700; }
+  .mem-card .meta-line { font-size: 12px; color: var(--text2); }
+  .mem-card .body {
+    font-size: 12px; color: var(--text2); margin-top: 8px;
+    border-top: 1px solid var(--border); padding-top: 8px; line-height: 1.55;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--text2); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+  }
+  #graphCanvas {
+    width: 100%; height: 600px; border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: grab; background: #0e141c;
+    display: block;
+  }
+  .graph-empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 600px; border: 1px dashed var(--border); border-radius: var(--radius);
+    color: var(--text2); background: var(--surface); text-align: center; padding: 24px;
+  }
 
   /* JSON editor */
   .json-area {
@@ -156,32 +217,34 @@
 <body>
 <div class="container">
   <div class="header">
-    <h1>📚 KB-RAG</h1>
+    <h1>KB-RAG</h1>
     <span class="badge">通用知识库</span>
     <span id="totalCount" class="text-muted" style="margin-left:auto; font-size:13px;"></span>
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('search')">🔍 搜索</div>
-    <div class="tab" onclick="switchTab('browse')">📋 浏览</div>
-    <div class="tab" onclick="switchTab('add')">➕ 添加</div>
-    <div class="tab" onclick="switchTab('stats')">📊 统计</div>
-    <div class="tab" onclick="switchTab('graph')">🧠 图谱</div>
-    <div class="tab" onclick="switchTab('memory')">💡 记忆</div>
+    <div class="tab active" onclick="switchTab('search')">搜索</div>
+    <div class="tab" onclick="switchTab('browse')">浏览</div>
+    <div class="tab" onclick="switchTab('controls')">控件</div>
+    <div class="tab" onclick="switchTab('add')">添加</div>
+    <div class="tab" onclick="switchTab('stats')">统计</div>
+    <div class="tab" onclick="switchTab('graph')">图谱</div>
+    <div class="tab" onclick="switchTab('memory')">记忆</div>
   </div>
 
   <!-- Search Panel -->
   <div id="panel-search" class="panel active">
-    <div class="search-row">
-      <input id="searchInput" placeholder="输入搜索关键词..." onkeydown="if(event.key==='Enter') doSearch()">
+    <div class="toolbar">
+      <input id="searchInput" class="grow" placeholder="输入搜索关键词..." onkeydown="if(event.key==='Enter') doSearch()">
       <select id="searchType">
         <option value="">所有类型</option>
-        <option value="test_case">test_case</option>
         <option value="doc">doc</option>
-        <option value="faq">faq</option>
-        <option value="wiki">wiki</option>
-        <option value="brain_memory">brain_memory</option>
+        <option value="test_case">test_case</option>
+        <option value="rule">rule</option>
+        <option value="ui_control">ui_control</option>
       </select>
+      <input id="searchApp" placeholder="app" style="width:120px">
+      <input id="searchGame" placeholder="game" style="width:100px">
       <button class="btn btn-primary" onclick="doSearch()">搜索</button>
     </div>
     <div id="searchResults"></div>
@@ -189,34 +252,68 @@
 
   <!-- Browse Panel -->
   <div id="panel-browse" class="panel">
-    <div class="flex-row mb-8">
+    <div class="toolbar">
       <select id="browseType" onchange="loadBrowse()">
         <option value="">所有类型</option>
-        <option value="test_case">test_case</option>
         <option value="doc">doc</option>
-        <option value="faq">faq</option>
-        <option value="wiki">wiki</option>
-        <option value="brain_memory">brain_memory</option>
+        <option value="test_case">test_case</option>
+        <option value="rule">rule</option>
+        <option value="ui_control">ui_control</option>
       </select>
+      <select id="browseStatus" onchange="loadBrowse()">
+        <option value="">全部状态</option>
+        <option value="published">published</option>
+        <option value="stale">stale</option>
+        <option value="deprecated">deprecated</option>
+        <option value="archived">archived</option>
+      </select>
+      <input id="browseGame" placeholder="game" style="width:100px" onkeydown="if(event.key==='Enter') loadBrowse()">
       <button class="btn" onclick="loadBrowse()">刷新</button>
     </div>
     <div id="browseResults"></div>
+    <div id="browseDetail" class="mt-8"></div>
+  </div>
+
+  <!-- Controls Panel -->
+  <div id="panel-controls" class="panel">
+    <div class="hint">控件专区（ui_control）：按 app → screen 浏览；不进知识图谱。批量粘贴 JSON 数组可导入。</div>
+    <div class="toolbar">
+      <input id="ctrlApp" class="grow" placeholder="app（必填筛选）" onkeydown="if(event.key==='Enter') loadControls()">
+      <input id="ctrlScreen" placeholder="screen" style="width:140px" onkeydown="if(event.key==='Enter') loadControls()">
+      <input id="ctrlQuery" placeholder="control_id / 文案" style="width:160px" onkeydown="if(event.key==='Enter') loadControls()">
+      <button class="btn btn-primary" onclick="loadControls()">查询</button>
+    </div>
+    <div id="controlsResults"></div>
+    <div class="form-row mt-8">
+      <label>批量导入 JSON 数组</label>
+      <textarea id="ctrlBatchJson" class="json-area" rows="5" placeholder='[{"title":"[login] 登录","app":"com.xxx","metadata":{"screen":"login","control_id":"btn_login"}}]'></textarea>
+      <button class="btn btn-primary mt-8" onclick="importControlsBatch()">批量导入</button>
+    </div>
   </div>
 
   <!-- Add Panel -->
   <div id="panel-add" class="panel">
+    <div class="hint">类型：doc=文档/问答 · test_case=用例 · rule=规范 · ui_control=控件（必填 app，不进图谱）。路径经验请用记忆 Tab / mb_remember。</div>
     <div class="form-row">
       <label>标题 *</label>
       <input id="addTitle" placeholder="输入标题">
     </div>
     <div class="form-row">
       <label>文档类型</label>
-      <select id="addType">
-        <option value="doc">doc（普通文档）</option>
+      <select id="addType" onchange="onAddTypeChange()">
+        <option value="doc">doc（文档/问答）</option>
         <option value="test_case">test_case（测试用例）</option>
-        <option value="faq">faq（常见问题）</option>
-        <option value="wiki">wiki（维基条目）</option>
+        <option value="rule">rule（规范）</option>
+        <option value="ui_control">ui_control（控件）</option>
       </select>
+    </div>
+    <div class="form-row" id="addAppRow" style="display:none">
+      <label>app *（ui_control）</label>
+      <input id="addApp" placeholder="com.example.app">
+    </div>
+    <div class="form-row">
+      <label>game（可选）</label>
+      <input id="addGame" placeholder="blitz">
     </div>
     <div class="form-row">
       <label>正文内容</label>
@@ -224,11 +321,11 @@
     </div>
     <div class="form-row">
       <label>标签（逗号分隔）</label>
-      <input id="addTags" placeholder="标签1, 标签2, 标签3">
+      <input id="addTags" placeholder="标签1, 标签2">
     </div>
     <div class="form-row">
-      <label>metadata（JSON，类型专属的扩展字段）</label>
-      <textarea id="addMetadata" class="json-area" placeholder='如测试用例：{"module": "登录", "priority": "P0", "preconditions": "已注册用户"}'></textarea>
+      <label>metadata（JSON）</label>
+      <textarea id="addMetadata" class="json-area" placeholder='{"screen":"login","control_id":"btn_ok"} 或 {"module":"登录","priority":"P0"}'></textarea>
     </div>
     <button class="btn btn-primary" onclick="doAdd()">添加</button>
     <div id="addResult" class="mt-8 text-muted"></div>
@@ -241,21 +338,35 @@
 
   <!-- Graph Panel -->
   <div id="panel-graph" class="panel">
-    <div class="flex-row mb-8">
-      <button class="btn btn-primary" onclick="loadGraph()">🔄 加载图谱</button>
-      <span id="graphInfo" class="text-muted"></span>
-      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动节点 · 滚轮缩放</span>
+    <div class="hint">按实体/关键词按需拉取子图，不会在进入标签时全量加载。节点上限默认 150。图谱不含 ui_control 控件节点。</div>
+    <div class="toolbar">
+      <input id="graphQuery" class="grow" placeholder="输入实体或关键词，如 Blitz / RTP..." onkeydown="if(event.key==='Enter') loadGraph()">
+      <select id="graphMaxNodes" title="最大节点数">
+        <option value="80">最多 80 节点</option>
+        <option value="150" selected>最多 150 节点</option>
+        <option value="300">最多 300 节点</option>
+        <option value="500">最多 500 节点</option>
+      </select>
+      <button class="btn btn-primary" onclick="loadGraph()">查询子图</button>
+      <button class="btn" onclick="clearGraph()" title="清空画布">清空</button>
+      <span id="graphInfo" class="text-muted" style="font-size:12px;"></span>
+      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动 · 滚轮缩放 · R 复位</span>
     </div>
-    <canvas id="graphCanvas" style="width:100%;height:600px;border:1px solid var(--border);border-radius:var(--radius);cursor:grab;"></canvas>
+    <div id="graphEmpty" class="graph-empty">输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。</div>
+    <canvas id="graphCanvas" style="display:none;"></canvas>
     <div id="graphDetail" class="mt-8 text-muted" style="font-size:13px;"></div>
   </div>
 
   <!-- Memory Panel -->
   <div id="panel-memory" class="panel">
-    <div class="flex-row mb-8">
-      <input id="memorySearchInput" placeholder="搜索路径签名..." onkeydown="if(event.key==='Enter') doMemorySearch()" style="flex:1;">
+    <div class="toolbar">
+      <input id="memorySearchInput" class="grow" placeholder="搜索路径签名..." onkeydown="if(event.key==='Enter') doMemorySearch()">
+      <select id="memorySort" onchange="onMemorySortChange()" title="排序方式">
+        <option value="time" selected>添加/更新时间 ↓</option>
+        <option value="tries">尝试次数 ↓</option>
+      </select>
       <button class="btn btn-primary" onclick="doMemorySearch()">搜索</button>
-      <button class="btn" onclick="loadBrainMemory()" style="margin-left:4px;">刷新</button>
+      <button class="btn" onclick="loadBrainMemory(0)">刷新</button>
     </div>
     <div id="memoryResults"></div>
   </div>
@@ -274,9 +385,21 @@ function switchTab(name) {
   document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
   document.getElementById(`panel-${name}`).classList.add('active');
   if (name === 'browse') loadBrowse();
+  if (name === 'controls') loadControls();
   if (name === 'stats') loadStats();
-  if (name === 'graph') setTimeout(loadGraph, 100);
+  // 图谱：进入 Tab 不自动全量加载，等用户输入关键词
   if (name === 'memory') loadBrainMemory();
+}
+
+function onAddTypeChange() {
+  const t = document.getElementById('addType').value;
+  document.getElementById('addAppRow').style.display = t === 'ui_control' ? 'block' : 'none';
+}
+
+function statusDot(status) {
+  const s = status || 'published';
+  const color = s === 'published' ? 'var(--green)' : s === 'stale' ? 'var(--orange)' : 'var(--red)';
+  return `<span class="chip" style="border-color:${color};color:${color}">${esc(s)}</span>`;
 }
 
 // ── Toast ──
@@ -293,32 +416,36 @@ async function doSearch() {
   const query = document.getElementById('searchInput').value.trim();
   if (!query) { toast('请输入搜索关键词', true); return; }
   const docType = document.getElementById('searchType').value;
+  const app = (document.getElementById('searchApp') || {}).value?.trim() || '';
+  const game = (document.getElementById('searchGame') || {}).value?.trim() || '';
   const el = document.getElementById('searchResults');
   el.innerHTML = '<div class="loading">搜索中...</div>';
 
   try {
     const params = new URLSearchParams({ query, n_results: 10 });
     if (docType) params.set('doc_type', docType);
+    if (app) params.set('app', app);
+    if (game) params.set('game', game);
     const res = await fetch(`${API}/api/v1/search?${params}`);
     const data = await res.json();
     if (!data.results || data.results.length === 0) {
       el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">未找到匹配结果</div>';
       return;
     }
-    let html = `<div class="text-muted mb-8">共找到 ${data.total} 条</div>`;
+    let html = `<div class="text-muted mb-8">共找到 ${data.total} 条（进度条=归一化 score）</div>`;
     for (const r of data.results) {
-      const pct = Math.min(r.score * 100, 100);
+      const pct = Math.min((r.score || 0) * 100, 100);
       const tags = r.tags && r.tags.length ? r.tags.join(', ') : '';
       html += `
         <div class="result-item">
-          <div class="title">${esc(r.title)} <span class="type-tag">${esc(r.doc_type)}</span></div>
+          <div class="title">${esc(r.title)} <span class="type-tag">${esc(r.doc_type)}</span> ${statusDot(r.governance_status)}</div>
           <div class="meta">
             <span style="display:inline-flex;align-items:center;gap:4px;">
-              <span class="score-bar" style="width:${pct * 1.5}px"></span>
-              ${(r.score * 100).toFixed(1)}%
+              <span class="score-bar" style="width:${Math.max(pct * 1.5, 4)}px"></span>
+              score ${(r.score || 0).toFixed(2)} · rrf ${r.rrf_score ?? '-'} · #${r.rank ?? '-'}
             </span>
             ${tags ? ' | ' + esc(tags) : ''}
-            <span style="float:right;">${r.created_at || ''}</span>
+            <span style="float:right;">${esc(r.updated_at || r.created_at || '')}</span>
           </div>
           <div class="summary">${esc(r.summary || '').slice(0, 200)}</div>
         </div>`;
@@ -335,12 +462,18 @@ const PAGE_SIZE = 20;
 
 async function loadBrowse() {
   const docType = document.getElementById('browseType').value;
+  const status = (document.getElementById('browseStatus') || {}).value || '';
+  const game = (document.getElementById('browseGame') || {}).value?.trim() || '';
   const el = document.getElementById('browseResults');
+  const detail = document.getElementById('browseDetail');
+  if (detail) detail.innerHTML = '';
   el.innerHTML = '<div class="loading">加载中...</div>';
 
   try {
     const params = new URLSearchParams({ offset: browsePage * PAGE_SIZE, limit: PAGE_SIZE });
     if (docType) params.set('doc_type', docType);
+    if (status) params.set('governance_status', status);
+    if (game) params.set('game', game);
     const res = await fetch(`${API}/api/v1/items?${params}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -354,14 +487,16 @@ async function loadBrowse() {
     const start = (data.offset ?? browsePage * PAGE_SIZE) + 1;
     const end = (data.offset ?? browsePage * PAGE_SIZE) + data.items.length;
     let html = `<div class="text-muted mb-8">共 ${data.total} 条，显示 ${start}-${end}</div>`;
-    html += '<table class="data-table"><thead><tr><th>标题</th><th>类型</th><th>标签</th><th>时间</th></tr></thead><tbody>';
+    html += '<table class="data-table"><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>时间</th></tr></thead><tbody>';
     for (const item of data.items) {
-      const tags = item.tags && item.tags.length ? item.tags.join(', ') : '-';
-      html += `<tr><td><strong>${esc(item.title)}</strong><br><span class="text-muted" style="font-size:11px;">${item.id}</span></td><td>${esc(item.doc_type)}</td><td class="text-muted">${esc(tags)}</td><td class="text-muted">${item.created_at || '-'}</td></tr>`;
+      html += `<tr style="cursor:pointer" onclick="openBrowseDetail('${item.id}')">
+        <td><strong>${esc(item.title)}</strong><br><span class="text-muted" style="font-size:11px;">${item.id}</span></td>
+        <td>${esc(item.doc_type)}</td>
+        <td>${statusDot(item.governance_status)}</td>
+        <td class="text-muted">${esc(item.updated_at || item.created_at || '-')}</td></tr>`;
     }
     html += '</tbody></table>';
 
-    // Pagination
     const totalPages = Math.ceil(data.total / PAGE_SIZE);
     html += '<div class="pagination">';
     if (browsePage > 0) html += `<button class="page-btn" onclick="browsePage=${browsePage-1};loadBrowse()">← 上一页</button>`;
@@ -377,12 +512,152 @@ async function loadBrowse() {
   }
 }
 
+async function openBrowseDetail(id) {
+  const el = document.getElementById('browseDetail');
+  el.innerHTML = '<div class="loading">加载详情...</div>';
+  try {
+    const res = await fetch(`${API}/api/v1/items/${id}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const item = await res.json();
+    el.innerHTML = `
+      <div class="stat-card">
+        <div class="flex-row mb-8"><strong>${esc(item.title)}</strong> ${statusDot(item.governance_status)} <span class="type-tag">${esc(item.doc_type)}</span></div>
+        <div class="form-row"><label>标题</label><input id="editTitle" value="${esc(item.title)}"></div>
+        <div class="form-row"><label>正文</label><textarea id="editContent" rows="6">${esc(item.content || '')}</textarea></div>
+        <div class="form-row"><label>tags（逗号分隔）</label><input id="editTags" value="${esc((item.tags || []).join(', '))}"></div>
+        <div class="form-row"><label>game / app</label>
+          <div class="flex-row"><input id="editGame" value="${esc(item.game || '')}" placeholder="game" style="flex:1">
+          <input id="editApp" value="${esc(item.app || '')}" placeholder="app" style="flex:1"></div>
+        </div>
+        <div class="flex-row mt-8">
+          <button class="btn btn-primary" onclick="saveBrowseItem('${item.id}')">保存</button>
+          <button class="btn" onclick="itemAction('${item.id}','reverify')">Reverify</button>
+          <button class="btn" onclick="itemAction('${item.id}','deprecate')">Deprecate</button>
+          <button class="btn btn-danger" onclick="deleteBrowseItem('${item.id}')">删除</button>
+        </div>
+        <pre class="text-muted mt-8" style="white-space:pre-wrap;font-size:12px;">${esc(JSON.stringify(item.metadata || {}, null, 2))}</pre>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="text-muted">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function saveBrowseItem(id) {
+  const tags = document.getElementById('editTags').value.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+  const body = {
+    title: document.getElementById('editTitle').value.trim(),
+    content: document.getElementById('editContent').value,
+    tags,
+    game: document.getElementById('editGame').value.trim(),
+    app: document.getElementById('editApp').value.trim(),
+  };
+  const res = await fetch(`${API}/api/v1/items/${id}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!res.ok) { toast((await res.json().catch(()=>({}))).detail || '保存失败', true); return; }
+  toast('已保存');
+  loadBrowse();
+  openBrowseDetail(id);
+}
+
+async function itemAction(id, action) {
+  const res = await fetch(`${API}/api/v1/items/${id}/${action}`, { method: 'POST' });
+  if (!res.ok) { toast((await res.json().catch(()=>({}))).detail || '操作失败', true); return; }
+  toast(action + ' 成功');
+  loadBrowse();
+  openBrowseDetail(id);
+}
+
+async function deleteBrowseItem(id) {
+  if (!confirm('确认删除？')) return;
+  const res = await fetch(`${API}/api/v1/items/${id}`, { method: 'DELETE' });
+  if (!res.ok) { toast('删除失败', true); return; }
+  toast('已删除');
+  document.getElementById('browseDetail').innerHTML = '';
+  loadBrowse();
+}
+
+async function loadControls() {
+  const app = document.getElementById('ctrlApp').value.trim();
+  const screen = document.getElementById('ctrlScreen').value.trim();
+  const q = document.getElementById('ctrlQuery').value.trim();
+  const el = document.getElementById('controlsResults');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  try {
+    const params = new URLSearchParams({ doc_type: 'ui_control', limit: 100, include_retired: 'false' });
+    if (app) params.set('app', app);
+    const res = await fetch(`${API}/api/v1/items?${params}`);
+    const data = await res.json();
+    let items = data.items || [];
+    if (screen) items = items.filter(it => (it.metadata || {}).screen === screen || String((it.metadata || {}).screen || '').includes(screen));
+    if (q) {
+      const qq = q.toLowerCase();
+      items = items.filter(it => {
+        const m = it.metadata || {};
+        return (it.title || '').toLowerCase().includes(qq)
+          || String(m.control_id || '').toLowerCase().includes(qq)
+          || String(m.name || m.text || '').toLowerCase().includes(qq);
+      });
+    }
+    if (!items.length) {
+      el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">无控件（可先填 app 或导入）</div>';
+      return;
+    }
+    let html = `<div class="text-muted mb-8">${items.length} 条控件</div>`;
+    for (const it of items) {
+      const m = it.metadata || {};
+      html += `<div class="mem-card">
+        <div class="mem-head"><strong>${esc(it.title)}</strong> <span class="chip">${esc(it.app || m.app || '-')}</span>
+          <span class="chip">${esc(m.screen || '-')}</span></div>
+        <div class="meta-line">id: ${esc(m.control_id || '-')} · ${esc(m.name || m.text || '')}</div>
+        <div class="meta-line">bounds: ${esc(typeof m.bounds === 'object' ? JSON.stringify(m.bounds) : (m.bounds || '-'))}</div>
+        <div class="meta-line text-muted">${esc(it.id)}</div>
+      </div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="text-muted">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function importControlsBatch() {
+  const raw = document.getElementById('ctrlBatchJson').value.trim();
+  if (!raw) { toast('请粘贴 JSON 数组', true); return; }
+  let arr;
+  try { arr = JSON.parse(raw); } catch (e) { toast('JSON 无效', true); return; }
+  if (!Array.isArray(arr)) { toast('需要数组', true); return; }
+  const items = arr.map(row => ({
+    title: row.title || row.name || row.control_id || 'control',
+    doc_type: 'ui_control',
+    content: row.content || row.title || '',
+    app: row.app || (row.metadata || {}).app || '',
+    game: row.game || '',
+    tags: row.tags || [],
+    metadata: Object.assign({}, row.metadata || {}, {
+      screen: row.screen || (row.metadata || {}).screen,
+      control_id: row.control_id || (row.metadata || {}).control_id,
+      bounds: row.bounds || (row.metadata || {}).bounds,
+      path: row.path || (row.metadata || {}).path,
+    }),
+  }));
+  const res = await fetch(`${API}/api/v1/items/batch`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ items }),
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.detail || '导入失败', true); return; }
+  toast(`导入成功 ${data.added} 条` + (data.errors ? `，失败 ${data.errors}` : ''));
+  loadControls();
+}
+
 // ── Add ──
 async function doAdd() {
   const title = document.getElementById('addTitle').value.trim();
   if (!title) { toast('标题不能为空', true); return; }
   const docType = document.getElementById('addType').value;
   const content = document.getElementById('addContent').value.trim();
+  const app = (document.getElementById('addApp') || {}).value?.trim() || '';
+  const game = (document.getElementById('addGame') || {}).value?.trim() || '';
+  if (docType === 'ui_control' && !app) { toast('ui_control 必须填写 app', true); return; }
   const tagsRaw = document.getElementById('addTags').value.trim();
   const tags = tagsRaw ? tagsRaw.split(/[,，]/).map(t => t.trim()).filter(t => t) : [];
   let metadata = {};
@@ -396,7 +671,7 @@ async function doAdd() {
     const res = await fetch(`${API}/api/v1/items`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, doc_type: docType, content, tags, metadata }),
+      body: JSON.stringify({ title, doc_type: docType, content, tags, metadata, app, game }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -405,8 +680,10 @@ async function doAdd() {
       document.getElementById('addContent').value = '';
       document.getElementById('addTags').value = '';
       document.getElementById('addMetadata').value = '';
+      if (document.getElementById('addApp')) document.getElementById('addApp').value = '';
+      if (document.getElementById('addGame')) document.getElementById('addGame').value = '';
     } else {
-      toast(data.detail || '添加失败', true);
+      toast(typeof data.detail === 'string' ? data.detail : (data.detail?.[0]?.msg || '添加失败'), true);
     }
   } catch (e) {
     toast(`请求失败: ${e.message}`, true);
@@ -426,11 +703,27 @@ async function loadStats() {
     const data = await res.json();
     let html = `<div class="stat-card"><div class="stat-num">${data.total}</div><div class="text-muted">总条目数</div></div>`;
     if (data.by_type) {
+      html += '<div class="stat-card"><div class="text-muted mb-8">按类型</div>';
       const maxCount = Math.max(...Object.values(data.by_type), 1);
       for (const [dt, count] of Object.entries(data.by_type)) {
         const pct = (count / maxCount * 100).toFixed(0);
-        html += `<div class="stat-row"><span style="width:100px;">${esc(dt)}</span><span style="width:40px;">${count}</span><div class="stat-bar" style="width:${pct * 2}px;background:var(--accent);"></div></div>`;
+        html += `<div class="stat-row"><span style="width:120px;">${esc(dt)}</span><span style="width:40px;">${count}</span><div class="stat-bar" style="width:${pct * 2}px;background:var(--accent);"></div></div>`;
       }
+      html += '</div>';
+    }
+    if (data.by_status) {
+      html += '<div class="stat-card"><div class="text-muted mb-8">按状态</div>';
+      for (const [st, count] of Object.entries(data.by_status)) {
+        html += `<div class="stat-row"><span style="width:120px;">${statusDot(st)}</span><span>${count}</span></div>`;
+      }
+      html += '</div>';
+    }
+    if (data.ui_control_by_app && Object.keys(data.ui_control_by_app).length) {
+      html += '<div class="stat-card"><div class="text-muted mb-8">ui_control 按 app</div>';
+      for (const [app, count] of Object.entries(data.ui_control_by_app)) {
+        html += `<div class="stat-row"><span style="width:200px;">${esc(app)}</span><span>${count}</span></div>`;
+      }
+      html += '</div>';
     }
     el.innerHTML = html;
   } catch (e) {
@@ -438,38 +731,67 @@ async function loadStats() {
   }
 }
 
-// ── Graph Force-Directed Visualization ──
+// ── Graph Force-Directed Visualization（按需子图，不全量） ──
 
 let graphSimulation = null;
 
-async function loadGraph() {
+function clearGraph() {
   const canvas = document.getElementById('graphCanvas');
+  const empty = document.getElementById('graphEmpty');
   const info = document.getElementById('graphInfo');
   const detail = document.getElementById('graphDetail');
+  if (graphSimulation) {
+    cancelAnimationFrame(graphSimulation);
+    graphSimulation = null;
+  }
+  canvas.style.display = 'none';
+  empty.style.display = 'flex';
+  empty.textContent = '输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。';
+  info.textContent = '';
+  detail.textContent = '';
+}
+
+async function loadGraph() {
+  const canvas = document.getElementById('graphCanvas');
+  const empty = document.getElementById('graphEmpty');
+  const info = document.getElementById('graphInfo');
+  const detail = document.getElementById('graphDetail');
+  const query = (document.getElementById('graphQuery').value || '').trim();
+  const maxNodes = document.getElementById('graphMaxNodes').value || '150';
+
+  if (!query) {
+    toast('请先输入实体或关键词再查子图', true);
+    return;
+  }
+
   info.textContent = '加载中...';
   detail.textContent = '';
+  empty.style.display = 'none';
+  canvas.style.display = 'block';
 
   let data;
   try {
-    const res = await fetch(`${API}/api/v1/graph/data`);
+    const params = new URLSearchParams({ query, max_nodes: maxNodes });
+    const res = await fetch(`${API}/api/v1/graph/data?${params}`);
     data = await res.json();
-  } catch(e) {
-    info.textContent = `❌ 加载失败: ${e.message}`;
+    if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
+  } catch (e) {
+    info.textContent = `加载失败: ${e.message}`;
+    empty.style.display = 'flex';
+    empty.textContent = `加载失败：${e.message}`;
+    canvas.style.display = 'none';
     return;
   }
 
   if (!data.ok || !data.nodes || data.nodes.length === 0) {
-    info.textContent = '⚠️ 图谱无数据（还没建图或 LightRAG 未启用）';
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('暂无图谱数据', canvas.width/2, canvas.height/2);
+    info.textContent = '无匹配子图';
+    empty.style.display = 'flex';
+    empty.textContent = data.message || '未找到相关节点，换个关键词试试';
+    canvas.style.display = 'none';
     return;
   }
 
-  info.textContent = `${data.nodes.length} 节点 · ${data.edges.length} 关系`;
+  info.textContent = `「${query}」· ${data.nodes.length} 节点 · ${data.edges.length} 关系`;
   renderGraph(canvas, data.nodes, data.edges, detail);
 }
 
@@ -612,10 +934,12 @@ function renderGraph(canvas, nodes, edges, detailEl) {
 
       if (energy > 0.5 && !isDragging && frameCount < COOLDOWN_FRAMES) {
         animId = requestAnimationFrame(tick);
+        graphSimulation = animId;
       }
     }
 
     if (animId) cancelAnimationFrame(animId);
+    if (graphSimulation) cancelAnimationFrame(graphSimulation);
     tick();
   }
 
@@ -809,15 +1133,33 @@ async function loadTotal() {
 const MEMORY_PAGE_SIZE = 50;
 let memoryPage = 0;
 
+function getMemorySort() {
+  const el = document.getElementById('memorySort');
+  return (el && el.value) || 'time';
+}
+
+function onMemorySortChange() {
+  memoryPage = 0;
+  const q = document.getElementById('memorySearchInput').value.trim();
+  if (q) doMemorySearch();
+  else loadBrainMemory(0);
+}
+
 async function loadBrainMemory(page) {
   if (page !== undefined) memoryPage = page;
   const el = document.getElementById('memoryResults');
   el.innerHTML = '<div class="loading">加载中...</div>';
   try {
     const offset = memoryPage * MEMORY_PAGE_SIZE;
-    const res = await fetch(`${API}/api/v1/memory/items?offset=${offset}&limit=${MEMORY_PAGE_SIZE}`);
+    const sortBy = getMemorySort();
+    const params = new URLSearchParams({
+      offset: String(offset),
+      limit: String(MEMORY_PAGE_SIZE),
+      sort_by: sortBy,
+    });
+    const res = await fetch(`${API}/api/v1/memory/items?${params}`);
     const data = await res.json();
-    renderMemoryItems(el, data.items || [], data.total || 0);
+    renderMemoryItems(el, data.items || [], data.total || 0, null, data.sort_by || sortBy);
   } catch (e) {
     el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
   }
@@ -831,24 +1173,35 @@ async function doMemorySearch() {
   try {
     const res = await fetch(`${API}/api/v1/memory/search?query=${encodeURIComponent(query)}&n_results=30`);
     const data = await res.json();
-    renderMemoryItems(el, data.results || [], (data.results || []).length, query);
+    let items = data.results || [];
+    const sortBy = getMemorySort();
+    if (sortBy === 'tries') {
+      items = [...items].sort((a, b) => (b.metadata?.tries || 0) - (a.metadata?.tries || 0));
+    } else {
+      items = [...items].sort((a, b) => {
+        const ta = (a.metadata?.updated_at || a.created_at || '');
+        const tb = (b.metadata?.updated_at || b.created_at || '');
+        return tb.localeCompare(ta);
+      });
+    }
+    renderMemoryItems(el, items, items.length, query, sortBy);
   } catch (e) {
     el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">搜索失败: ${e.message}</div>`;
   }
 }
 
-function renderMemoryItems(el, items, total, query) {
+function renderMemoryItems(el, items, total, query, sortBy) {
   if (!items || items.length === 0) {
-    el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无比记忆</div>';
+    el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无路径记忆</div>';
     return;
   }
 
+  const sortLabel = sortBy === 'tries' ? '尝试次数 ↓' : '添加/更新时间 ↓';
   let html = '';
   if (query) {
-    html += `<div class="text-muted mb-8">搜索「${esc(query)}」共找到 ${total} 条</div>`;
+    html += `<div class="text-muted mb-8">搜索「${esc(query)}」共 ${total} 条 · 排序：${sortLabel}</div>`;
   } else {
-    html += `<div class="text-muted mb-8">共 ${total} 条路径记忆</div>`;
-    // Pagination
+    html += `<div class="text-muted mb-8">共 ${total} 条路径记忆 · 排序：${sortLabel}</div>`;
     const totalPages = Math.ceil(total / MEMORY_PAGE_SIZE);
     if (totalPages > 1) {
       html += '<div class="pagination" style="margin-bottom:12px;">';
@@ -866,36 +1219,34 @@ function renderMemoryItems(el, items, total, query) {
     const pleasure = meta.last_pleasure || meta.pleasure || 0;
     const tries = meta.tries || 1;
     const reliability = meta.reliability !== undefined ? (meta.reliability * 100).toFixed(0) + '%' : '-';
-    const avgP = meta.avg_pleasure !== undefined ? meta.avg_pleasure.toFixed(1) : pleasure;
+    const avgP = meta.avg_pleasure !== undefined ? Number(meta.avg_pleasure).toFixed(1) : pleasure;
+    const when = meta.updated_at || item.created_at || '';
 
-    // Pleasure indicator
     let pleEmoji, pleColor;
-    if (pleasure > 3) { pleEmoji = '😊'; pleColor = '#3fb950'; }
-    else if (pleasure > 0) { pleEmoji = '🙂'; pleColor = '#58a6ff'; }
-    else if (pleasure > -3) { pleEmoji = '😐'; pleColor = '#d29922'; }
-    else { pleEmoji = '😣'; pleColor = '#f85149'; }
+    if (pleasure > 3) { pleEmoji = '😊'; pleColor = 'var(--green)'; }
+    else if (pleasure > 0) { pleEmoji = '🙂'; pleColor = 'var(--accent)'; }
+    else if (pleasure > -3) { pleEmoji = '😐'; pleColor = 'var(--orange)'; }
+    else { pleEmoji = '😣'; pleColor = 'var(--red)'; }
 
     const method = meta.method || '';
     const source = meta.source || '';
     const params = meta.params || '';
     const tags = (item.tags || []).join(', ');
 
-    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+    html += `<div class="mem-card">
+      <div class="mem-head">
         <span>${pleEmoji}</span>
         <strong>${esc(item.title || item.id)}</strong>
-        <span style="font-size:12px;color:${pleColor};font-weight:bold;">爽感 ${avgP}</span>
-        <span class="text-muted" style="font-size:11px;">尝试 ${tries} 次 · 可靠 ${reliability}</span>
+        <span class="pleasure" style="color:${pleColor};">爽感 ${avgP}</span>
+        <span class="chip">尝试 ${tries}</span>
+        <span class="chip">可靠 ${reliability}</span>
+        ${when ? `<span class="chip">${esc(when)}</span>` : ''}
       </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:4px;">
-        ${method ? `方法: ${esc(method)}` : ''}${source ? ` | 来源: ${esc(source)}` : ''}${params ? ` | 参数: ${esc(params)}` : ''}
+      <div class="meta-line">
+        ${method ? `方法: ${esc(method)}` : ''}${source ? ` · 来源: ${esc(source)}` : ''}${params ? ` · 参数: ${esc(params)}` : ''}
       </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:2px;">
-        ${tags ? `标签: ${esc(tags)}` : ''}
-      </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px;border-top:1px solid var(--border);padding-top:4px;">
-        ${esc((item.content || '').slice(0, 300))}
-      </div>
+      ${tags ? `<div class="meta-line" style="margin-top:2px;">标签: ${esc(tags)}</div>` : ''}
+      <div class="body">${esc((item.content || '').slice(0, 300))}</div>
     </div>`;
   }
 

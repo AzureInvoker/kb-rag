@@ -406,16 +406,24 @@ class LightRAGEngine:
             # 降级：至少返回启用/就绪信息
             return {"enabled": True, "ready": True, "message": str(e)}
 
-    async def async_get_graph_data(self, max_nodes: Optional[int] = None) -> dict:
-        """异步获取图谱完整数据（节点+关系），供前端可视化"""
+    async def async_get_graph_data(
+        self,
+        max_nodes: Optional[int] = None,
+        query: Optional[str] = None,
+    ) -> dict:
+        """按关键词获取图谱子图（默认不全量 *），供前端可视化"""
         if not self.is_available():
             return {"ok": False, "message": self._error or "LightRAG 不可用", "nodes": [], "edges": []}
         await self._ensure_storages_async()
         if not self._ready:
             return {"ok": False, "message": self._error or "存储初始化失败", "nodes": [], "edges": []}
         try:
-            limit_nodes = max_nodes or self.cfg.lightrag_max_graph_nodes
-            graph = await self._rag.get_knowledge_graph("*", max_nodes=limit_nodes)
+            # 前端可视化默认限额；全量仅当显式 query="*" 且传入较大 max_nodes
+            limit_nodes = max_nodes if max_nodes is not None else 150
+            kg_query = (query or "").strip() or "*"
+            if kg_query == "*" and max_nodes is None:
+                limit_nodes = min(limit_nodes, 200)
+            graph = await self._rag.get_knowledge_graph(kg_query, max_nodes=limit_nodes)
             nodes = []
             edges = []
             if graph:

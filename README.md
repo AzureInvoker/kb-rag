@@ -17,17 +17,18 @@ kb-rag/
 ├── config.py / config.example.yaml
 ├── run.sh
 ├── server/
-│   ├── engine.py          核心引擎（ChromaDB + BM25 + RRF + Rerank）
+│   ├── taxonomy.py        doc_type / 治理常量
+│   ├── engine.py          核心引擎（ChromaDB + BM25 + RRF）
 │   ├── retrieval.py       RRF / 分块 / Reranker
 │   ├── lightrag_engine.py LightRAG 知识图谱
-│   ├── search.py          SearchRouter
 │   ├── api.py             FastAPI + MCP
-│   └── mcp_handler.py     MCP 工具
+│   ├── mcp_handler.py     MCP 工具
+│   └── static/            管理前端（含控件专区）
 └── scripts/
-    ├── backfill_content.py   旧库回填 metadata.content
-    ├── reindex_chunks.py     长文档重新分块
-    ├── backfill_lightrag.py  图谱回填
-    └── eval_recall.py        召回评测
+    ├── backfill_content.py / backfill_taxonomy.py
+    ├── mark_stale.py / archive_stale.py
+    ├── export_kb.py / import_kb.py
+    └── eval_recall.py
 ```
 
 ## 快速开始
@@ -41,19 +42,33 @@ cp config.example.yaml config.yaml
 ./run.sh test
 ```
 
+## 文档类型
+
+| doc_type | 用途 |
+|----------|------|
+| `doc` | 文档 / 手册 / 问答（含原 wiki、faq） |
+| `test_case` | 测试用例 |
+| `rule` | 团队规范 |
+| `ui_control` | UI 控件（必填 `app`，**不进** LightRAG） |
+
+路径探索经验只用 `mb_*`，不要写成 kb。
+
 ## 升级已有库（无需重建路径脑）
 
 ```bash
-# 1. 回填全文到 metadata（BM25 可搜正文）
+# A 日常：回填全文 + 分类治理 meta（不 reembed）
 python scripts/backfill_content.py
+python scripts/backfill_taxonomy.py --dry-run
+python scripts/backfill_taxonomy.py
+python scripts/mark_stale.py --dry-run
+# 确认后：python scripts/mark_stale.py --apply
 
-# 2. 可选：长文档重新分块
+# B 换嵌入模型 / 灾难恢复
+python scripts/export_kb.py -o backup/kb_export.jsonl
+python scripts/import_kb.py backup/kb_export.jsonl --wipe
+
+# 可选：长文档重新分块 / 图谱重建
 python scripts/reindex_chunks.py
-
-# 3. 若换了嵌入模型
-uv run python -c "from server.engine import get_engine; get_engine().reembed()"
-
-# 4. LightRAG 图谱需单独重建
 rm -rf .lightrag_storage && python scripts/backfill_lightrag.py
 ```
 
@@ -67,12 +82,14 @@ memory.embed_model: "BAAI/bge-small-zh-v1.5"
 lightrag.embed_model: "BAAI/bge-small-zh-v1.5"
 ```
 
-检索增强见 `config.example.yaml` 的 `retrieval` 段。
+检索见 `retrieval`；新鲜度/降权见 `governance`（`config.example.yaml`）。
 
 ## MCP 工具
 
 | 工具 | 功能 |
 |------|------|
-| kb_search / kb_agentic_search | 混合检索 |
-| kb_add / kb_delete | 写入 / 删除 |
-| mb_check / mb_remember / mb_avoid / mb_prune | 路径脑（独立库，不受分块影响） |
+| kb_search / kb_agentic_search | 混合检索（归一化 score + app/game 过滤） |
+| kb_add / kb_add_batch / kb_update | 写入 / 更新 |
+| kb_deprecate / kb_reverify | 淘汰 / 重新验证 |
+| kb_delete / kb_list / kb_stats | 删除 / 浏览 / 统计 |
+| mb_check / mb_remember / mb_avoid / mb_prune | 路径脑（独立库） |

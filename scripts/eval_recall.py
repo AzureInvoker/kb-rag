@@ -23,6 +23,7 @@ EVAL_CASES = [
     {"id": "tunnel", "query": "tunnel 抓包 spinbet", "expect_tokens": ["tunnel", "抓包"]},
     {"id": "makebet", "query": "makeBet 下注接口", "expect_tokens": ["makebet", "下注"]},
     {"id": "mr_rule", "query": "审查 MR 铁律", "expect_tokens": ["mr", "审查"]},
+    {"id": "ui_btn", "query": "登录按钮 control", "expect_tokens": ["btn_login", "登录"], "doc_type": "ui_control", "app": "com.demo.game"},
 ]
 
 
@@ -49,7 +50,7 @@ def _seed_engine(enable_rerank: bool):
 
     samples = [
         KnowledgeItem(title="用户登录测试", doc_type="test_case", content="验证登录流程与密码校验", tags=["登录"]),
-        KnowledgeItem(title="Bridge 接入说明", doc_type="wiki", content="Bridge 是中台与游戏 H5 的 JS 接入桥", tags=["bridge"]),
+        KnowledgeItem(title="Bridge 接入说明", doc_type="doc", content="Bridge 是中台与游戏 H5 的 JS 接入桥", tags=["bridge"]),
         KnowledgeItem(title="tunnel 抓包指南", doc_type="doc", content="使用 eagis tunnel 抓包分析 spinbet 请求", tags=["tunnel"]),
         KnowledgeItem(
             title="makeBet 接口",
@@ -57,12 +58,20 @@ def _seed_engine(enable_rerank: bool):
             content="中台 makeBet 下注扣币接口，参数含 uid、betAmount",
             tags=["makebet"],
         ),
-        KnowledgeItem(title="MR 审查铁律", doc_type="doc", content="合并请求审查必须检查资损与幂等", tags=["mr"]),
+        KnowledgeItem(title="MR 审查铁律", doc_type="rule", content="合并请求审查必须检查资损与幂等", tags=["mr"]),
         KnowledgeItem(
             title="长文档示例",
             doc_type="doc",
             content=("接口说明 " * 300) + " 文末关键字 special_tail_token",
             tags=["long"],
+        ),
+        KnowledgeItem(
+            title="[login] 登录按钮",
+            doc_type="ui_control",
+            content="主包登录页登录按钮",
+            app="com.demo.game",
+            metadata={"screen": "login", "control_id": "btn_login", "text": "登录"},
+            tags=["ui"],
         ),
     ]
     for item in samples:
@@ -76,12 +85,18 @@ def run_eval(enable_rerank: bool) -> dict:
     details = []
 
     for case in EVAL_CASES:
-        results = engine.search(case["query"], n_results=3)
+        results = engine.search(
+            case["query"],
+            n_results=3,
+            doc_type=case.get("doc_type"),
+            app=case.get("app"),
+        )
         ok = False
         top_titles = []
         for row in results:
             top_titles.append(row.get("title", ""))
-            if _hit(row.get("title", ""), row.get("content", "") or row.get("summary", ""), case["expect_tokens"]):
+            blob = f"{row.get('title', '')} {row.get('content', '') or row.get('summary', '')} {json.dumps(row.get('metadata') or {}, ensure_ascii=False)}"
+            if _hit(blob, "", case["expect_tokens"]):
                 ok = True
         hits += int(ok)
         details.append({"id": case["id"], "query": case["query"], "hit": ok, "top": top_titles})

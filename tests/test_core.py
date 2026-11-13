@@ -222,17 +222,12 @@ def test_engine_add_and_search():
     import tempfile
     tmpdir = tempfile.mkdtemp()
 
-    # 替换配置
-    from config import _config_cache
-    _config_cache = None
-
     # 手动设置 env 指向临时目录
     os.environ["KB_CHROMA_DIR"] = tmpdir
     os.environ["KB_COLLECTION_NAME"] = "test_collection"
 
-    # 重新加载配置
-    from config import get_config
-    cfg = get_config()
+    import config as cfg_mod
+    cfg_mod._config_cache = None
 
     from server.engine import VectorEngine
     from server.models import KnowledgeItem
@@ -293,7 +288,7 @@ def test_engine_add_and_search():
     # 清理
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)
-    _config_cache = None
+    cfg_mod._config_cache = None
     for key in ["KB_CHROMA_DIR", "KB_COLLECTION_NAME"]:
         os.environ.pop(key, None)
     print("  ✅ test_engine_add_and_search")
@@ -324,6 +319,81 @@ def test_chunk_split_and_dedupe():
     assert out[0]["id"] == "p1"
     assert out[0]["score"] == 0.9
     print("  ✅ test_chunk_split_and_dedupe")
+
+
+def test_normalize_doc_type():
+    from server.taxonomy import normalize_doc_type, require_ui_control_app
+
+    assert normalize_doc_type("wiki") == "doc"
+    assert normalize_doc_type("faq") == "doc"
+    assert normalize_doc_type("unknown_xyz") == "doc"
+    assert normalize_doc_type("test_case") == "test_case"
+    try:
+        require_ui_control_app("ui_control", "", {})
+        assert False, "should raise"
+    except ValueError:
+        pass
+    assert require_ui_control_app("ui_control", "com.x", {}) == "com.x"
+    print("  ✅ test_normalize_doc_type")
+
+
+def test_search_score_normalize_and_retire():
+    import shutil
+    tmpdir = tempfile.mkdtemp()
+    os.environ["KB_CHROMA_DIR"] = tmpdir
+    os.environ["KB_COLLECTION_NAME"] = "test_score"
+    os.environ["KB_RERANK_ENABLED"] = "false"
+    os.environ["KB_LIGHTRAG_ENABLED"] = "false"
+
+    import config as cfg_mod
+    cfg_mod._config_cache = None
+
+    from server.engine import VectorEngine
+    from server.models import KnowledgeItem
+
+    engine = VectorEngine(enable_chunking=False, enable_rerank=False)
+    a = KnowledgeItem(title="登录成功文档", doc_type="doc", content="登录流程说明", created_at="2025-01-01")
+    b = KnowledgeItem(
+        title="登录草稿", doc_type="doc", content="登录草稿 auto",
+        tags=["auto_curated"], created_at="2025-01-02",
+    )
+    id_a = engine.add(a)
+    id_b = engine.add(b)
+
+    results = engine.search("登录", n_results=5)
+    assert results
+    assert "score" in results[0] and "rrf_score" in results[0] and "rank" in results[0]
+    assert results[0]["score"] <= 1.0
+    assert max(r["score"] for r in results) == 1.0 or len(results) == 1
+
+    engine.set_status(id_a, "archived")
+    visible = engine.search("登录", n_results=5, include_retired=False)
+    assert all(r["id"] != id_a for r in visible)
+
+    engine.update(id_b, content="登录草稿已改为新关键词 zebra_token")
+    hit = engine.search("zebra_token", n_results=3)
+    assert any(r["id"] == id_b for r in hit)
+
+    ui_ok = KnowledgeItem(
+        title="[login] 按钮", doc_type="ui_control", content="登录按钮",
+        app="com.demo.app", metadata={"screen": "login", "control_id": "btn"},
+        created_at="2025-01-03",
+    )
+    ui_id = engine.add(ui_ok)
+    ui_hits = engine.search("登录按钮", n_results=5, doc_type="ui_control", app="com.demo.app")
+    assert any(r["id"] == ui_id for r in ui_hits)
+
+    try:
+        engine.add(KnowledgeItem(title="坏控件", doc_type="ui_control", content="x"))
+        assert False, "ui_control without app should fail"
+    except ValueError:
+        pass
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    for key in ["KB_CHROMA_DIR", "KB_COLLECTION_NAME", "KB_RERANK_ENABLED", "KB_LIGHTRAG_ENABLED"]:
+        os.environ.pop(key, None)
+    cfg_mod._config_cache = None
+    print("  ✅ test_search_score_normalize_and_retire")
 
 
 def test_list_parents_paginates_documents_not_chunks():
@@ -387,6 +457,8 @@ if __name__ == "__main__":
         test_config_defaults,
         test_config_env_override,
         test_engine_add_and_search,
+        test_normalize_doc_type,
+        test_search_score_normalize_and_retire,
         test_rrf_fusion,
         test_chunk_split_and_dedupe,
         test_list_parents_paginates_documents_not_chunks,

@@ -11,23 +11,31 @@ from typing import Optional
 
 from .models import KnowledgeItem
 from .retrieval import Reranker, dedupe_by_parent, parent_id_from_meta, reciprocal_rank_fusion, split_content
+from .taxonomy import (
+    RETIRED_STATUSES,
+    compute_next_verify_at,
+    infer_source_quality,
+    normalize_doc_type,
+    normalize_governance_status,
+    now_str,
+    require_ui_control_app,
+    should_skip_chunking,
+)
 
 try:
     from .config import get_config
 except ImportError:
     from config import get_config
 
-cfg = get_config()
 DATA_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CHROMA_DIR = cfg.chroma_dir
-EMBED_MODEL = cfg.embed_model
-COLLECTION_NAME = cfg.collection_name
 
 logger = logging.getLogger("engine")
 
 _CHROMA_RESERVED = {
     "id", "doc_type", "title", "content", "tags", "metadata_json", "created_at",
     "parent_id", "chunk_index", "is_chunk", "parent_content",
+    "category", "game", "app", "governance_status", "version",
+    "updated_at", "next_verify_at", "source_quality",
 }
 
 
@@ -43,15 +51,14 @@ class VectorEngine:
         enable_chunking: Optional[bool] = None,
         enable_rerank: Optional[bool] = None,
     ):
-        self._chroma_dir = Path(chroma_dir) if chroma_dir else CHROMA_DIR
+        _cfg = get_config()
+        self._chroma_dir = Path(chroma_dir) if chroma_dir else Path(_cfg.chroma_dir)
         self._chroma_dir = Path(self._chroma_dir).resolve()
-        self._embed_model = embed_model or EMBED_MODEL
-        self._collection_name = collection_name or COLLECTION_NAME
+        self._embed_model = embed_model or _cfg.embed_model
+        self._collection_name = collection_name or _cfg.collection_name
         self._collection = None
         self._embedder = None
         self._init_lock = threading.Lock()
-
-        _cfg = get_config()
         self._enable_chunking = _cfg.chunk_enabled if enable_chunking is None else enable_chunking
         self._enable_rerank = _cfg.rerank_enabled if enable_rerank is None else enable_rerank
         self._chunk_min_chars = 1000 if _cfg is None else _cfg.chunk_min_chars
@@ -62,6 +69,10 @@ class VectorEngine:
         self._bm25_candidates = _cfg.bm25_candidates
         self._rerank_top_n = _cfg.rerank_top_n
         self._reranker = Reranker(_cfg.rerank_model) if self._enable_rerank else None
+        self._freshness_sla_days = dict(getattr(_cfg, "freshness_sla_days", {}) or {})
+        self._auto_curated_penalty = float(getattr(_cfg, "auto_curated_penalty", 0.5))
+        self._stale_penalty = float(getattr(_cfg, "stale_penalty", 0.85))
+        self._archive_after_stale_days = int(getattr(_cfg, "archive_after_stale_days", 180))
 
         self._bm25 = None
         self._bm25_metadata = None
@@ -266,6 +277,25 @@ class VectorEngine:
                 return stored
         return doc_text or ""
 
+    def _prepare_item_for_write(self, item: KnowledgeItem) -> KnowledgeItem:
+        """规范化类型/治理字段；ui_control 校验 app。"""
+        item.doc_type = normalize_doc_type(item.doc_type)
+        item.governance_status = normalize_governance_status(item.governance_status)
+        item.source_quality = infer_source_quality(item.tags, item.source_quality)
+        item.app = require_ui_control_app(item.doc_type, item.app, item.metadata)
+        if item.app and isinstance(item.metadata, dict):
+            item.metadata["app"] = item.app
+        if not item.created_at:
+            item.created_at = now_str()
+        item.updated_at = item.updated_at or now_str()
+        if not item.next_verify_at:
+            item.next_verify_at = compute_next_verify_at(
+                item.doc_type, self._freshness_sla_days,
+            )
+        if not item.version:
+            item.version = 1
+        return item
+
     def _build_chroma_metadata(
         self,
         item: KnowledgeItem,
@@ -284,11 +314,52 @@ class VectorEngine:
             "content": store_parent_content,
             "parent_content": store_parent_content,
             "tags": json.dumps(item.tags, ensure_ascii=False),
-            "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
-            "created_at": item.created_at,
+            "metadata_json": json.dumps(item.metadata or {}, ensure_ascii=False),
+            "created_at": item.created_at or "",
             "parent_id": parent_id,
             "chunk_index": int(chunk_index),
             "is_chunk": bool(is_chunk),
+            "category": item.category or "",
+            "game": item.game or "",
+            "app": item.app or "",
+            "governance_status": item.governance_status or "published",
+            "version": int(item.version or 1),
+            "updated_at": item.updated_at or item.created_at or "",
+            "next_verify_at": item.next_verify_at or "",
+            "source_quality": item.source_quality or "curated",
+        }
+
+    def _item_from_stored(self, parent_id: str, meta: dict, content: str) -> KnowledgeItem:
+        tags = self._parse_tags(meta.get("tags", "[]"))
+        nested = self._extract_brain_meta(meta)
+        return KnowledgeItem(
+            id=parent_id,
+            doc_type=meta.get("doc_type", "doc"),
+            title=meta.get("title", ""),
+            content=content or "",
+            metadata=nested if isinstance(nested, dict) else {},
+            tags=tags,
+            created_at=meta.get("created_at", ""),
+            category=meta.get("category", "") or "",
+            game=meta.get("game", "") or "",
+            app=meta.get("app", "") or "",
+            governance_status=meta.get("governance_status", "published") or "published",
+            version=int(meta.get("version") or 1),
+            updated_at=meta.get("updated_at", "") or "",
+            next_verify_at=meta.get("next_verify_at", "") or "",
+            source_quality=meta.get("source_quality", "curated") or "curated",
+        )
+
+    def _parent_fields_from_meta(self, meta: dict) -> dict:
+        return {
+            "category": meta.get("category", "") or "",
+            "game": meta.get("game", "") or "",
+            "app": meta.get("app", "") or "",
+            "governance_status": meta.get("governance_status", "published") or "published",
+            "version": int(meta.get("version") or 1),
+            "updated_at": meta.get("updated_at", "") or "",
+            "next_verify_at": meta.get("next_verify_at", "") or "",
+            "source_quality": meta.get("source_quality", "curated") or "curated",
         }
 
     def _add_single(
@@ -342,13 +413,14 @@ class VectorEngine:
             return 0
 
     def add(self, item: KnowledgeItem) -> str:
+        item = self._prepare_item_for_write(item)
         parent_id = item.id or item.gen_id()
         item.id = parent_id
         full_content = item.content or ""
 
         use_chunking = (
             self._enable_chunking
-            and item.doc_type != "brain_memory"
+            and not should_skip_chunking(item.doc_type)
             and len(full_content) > self._chunk_min_chars
         )
         if not use_chunking:
@@ -373,6 +445,14 @@ class VectorEngine:
                 metadata=item.metadata,
                 tags=item.tags,
                 created_at=item.created_at,
+                category=item.category,
+                game=item.game,
+                app=item.app,
+                governance_status=item.governance_status,
+                version=item.version,
+                updated_at=item.updated_at,
+                next_verify_at=item.next_verify_at,
+                source_quality=item.source_quality,
             )
             self._add_single(
                 chunk_item,
@@ -391,6 +471,174 @@ class VectorEngine:
             self.add(item)
             count += 1
         return count
+
+    def update_metadata_only(self, parent_id: str, item: KnowledgeItem) -> bool:
+        """只更新 parent 下所有 chunk 的标量 meta，不 reembed。"""
+        try:
+            existing = self.collection.get(where={"parent_id": parent_id})
+            ids = list(existing.get("ids") or [])
+            if parent_id not in ids:
+                probe = self.collection.get(ids=[parent_id])
+                if probe.get("ids"):
+                    ids.append(parent_id)
+                    if not existing.get("ids"):
+                        existing = probe
+            if not ids:
+                return False
+
+            # 重新 get 保证顺序一致
+            row = self.collection.get(ids=ids)
+            new_metas = []
+            for i, hit_id in enumerate(row["ids"]):
+                old = dict(row["metadatas"][i] or {})
+                chunk_index = int(old.get("chunk_index") or 0)
+                is_chunk = bool(old.get("is_chunk"))
+                full = self._stored_content(old, (row.get("documents") or [""])[i] if row.get("documents") else "")
+                built = self._build_chroma_metadata(
+                    item,
+                    parent_id=parent_id,
+                    chunk_index=chunk_index,
+                    is_chunk=is_chunk,
+                    full_content=full if (not is_chunk or chunk_index == 0) else old.get("parent_content") or "",
+                )
+                # 保留原 content/parent_content（不改正文）
+                if old.get("content") is not None:
+                    built["content"] = old.get("content")
+                if old.get("parent_content") is not None:
+                    built["parent_content"] = old.get("parent_content")
+                built["id"] = hit_id
+                new_metas.append(built)
+            self.collection.update(ids=row["ids"], metadatas=new_metas)
+            self._invalidate_bm25()
+            return True
+        except Exception as exc:
+            logger.warning("update_metadata_only failed for %s: %s", parent_id, exc)
+            return False
+
+    def update(self, item_id: str, **fields) -> Optional[dict]:
+        """合并更新条目。改正文/标题则重建向量；只改 meta 则 update。"""
+        current = self.get_by_id(item_id)
+        if not current:
+            return None
+
+        item = KnowledgeItem(
+            id=current["id"],
+            doc_type=current.get("doc_type") or "doc",
+            title=current.get("title") or "",
+            content=current.get("content") or "",
+            metadata=dict(current.get("metadata") or {}),
+            tags=list(current.get("tags") or []),
+            created_at=current.get("created_at") or "",
+            category=current.get("category") or "",
+            game=current.get("game") or "",
+            app=current.get("app") or "",
+            governance_status=current.get("governance_status") or "published",
+            version=int(current.get("version") or 1),
+            updated_at=current.get("updated_at") or "",
+            next_verify_at=current.get("next_verify_at") or "",
+            source_quality=current.get("source_quality") or "curated",
+        )
+
+        content_keys = {"title", "content"}
+        touch_content = False
+        explicit_next_verify = fields.get("next_verify_at")
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if key == "tags":
+                item.tags = list(value) if isinstance(value, list) else item.tags
+            elif key == "metadata" and isinstance(value, dict):
+                merged = dict(item.metadata or {})
+                merged.update(value)
+                item.metadata = merged
+            elif hasattr(item, key):
+                setattr(item, key, value)
+            if key in content_keys:
+                touch_content = True
+
+        item.version = int(item.version or 1) + 1
+        item.updated_at = now_str()
+        # 避免 prepare 覆盖调用方指定的 next_verify_at
+        if not item.next_verify_at:
+            item.next_verify_at = compute_next_verify_at(item.doc_type, self._freshness_sla_days)
+        item = self._prepare_item_for_write(item)
+        if explicit_next_verify:
+            item.next_verify_at = explicit_next_verify
+
+        if touch_content:
+            item.id = current["id"]
+            self.add(item)
+        else:
+            ok = self.update_metadata_only(current["id"], item)
+            if not ok:
+                return None
+        return self.get_by_id(current["id"])
+
+    def set_status(self, item_id: str, status: str, *, refresh_verify: bool = False) -> Optional[dict]:
+        current = self.get_by_id(item_id)
+        if not current:
+            return None
+        if refresh_verify:
+            return self.update(
+                item_id,
+                governance_status="published",
+                next_verify_at=compute_next_verify_at(
+                    current.get("doc_type") or "doc", self._freshness_sla_days,
+                ),
+            )
+        return self.update(item_id, governance_status=normalize_governance_status(status))
+
+    def mark_stale_batch(self, *, dry_run: bool = True) -> dict:
+        """published 且超过 next_verify_at → stale。"""
+        from datetime import datetime
+
+        items = self._parent_documents()
+        now = datetime.now()
+        candidates = []
+        for it in items:
+            if (it.get("governance_status") or "published") != "published":
+                continue
+            nva = it.get("next_verify_at") or ""
+            if not nva:
+                continue
+            try:
+                due = datetime.strptime(nva, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if now > due:
+                candidates.append(it["id"])
+        if dry_run:
+            return {"dry_run": True, "count": len(candidates), "ids": candidates[:50]}
+        updated = 0
+        for iid in candidates:
+            if self.set_status(iid, "stale"):
+                updated += 1
+        return {"dry_run": False, "count": updated, "ids": candidates[:50]}
+
+    def archive_stale_batch(self, *, dry_run: bool = True) -> dict:
+        """stale 超过 archive_after_stale_days → archived。"""
+        from datetime import datetime, timedelta
+
+        items = self._parent_documents()
+        cutoff = datetime.now() - timedelta(days=self._archive_after_stale_days)
+        candidates = []
+        for it in items:
+            if (it.get("governance_status") or "") != "stale":
+                continue
+            ts = it.get("updated_at") or it.get("created_at") or ""
+            try:
+                when = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if when < cutoff:
+                candidates.append(it["id"])
+        if dry_run:
+            return {"dry_run": True, "count": len(candidates), "ids": candidates[:50]}
+        updated = 0
+        for iid in candidates:
+            if self.set_status(iid, "archived"):
+                updated += 1
+        return {"dry_run": False, "count": updated, "ids": candidates[:50]}
 
     def delete(self, item_id: str) -> bool:
         deleted = self._delete_by_parent(item_id)
@@ -473,37 +721,152 @@ class VectorEngine:
         results.sort(key=lambda x: -x[1])
         return results[: self._bm25_candidates]
 
-    def _hit_to_result(self, hit_id: str, meta: dict, doc_text: str, score: float) -> dict:
+    def _hit_to_result(self, hit_id: str, meta: dict, doc_text: str, rrf_score: float) -> dict:
         full_content = self._stored_content(meta, doc_text)
         parent_id = parent_id_from_meta(meta, hit_id)
         is_chunk = bool(meta.get("is_chunk"))
         summary_src = doc_text or full_content
+        tags = self._parse_tags(meta.get("tags", "[]"))
         return {
             "id": parent_id if is_chunk else hit_id,
             "parent_id": parent_id,
             "doc_type": meta.get("doc_type", ""),
             "title": meta.get("title", ""),
-            "tags": self._parse_tags(meta.get("tags", "[]")),
+            "tags": tags,
             "metadata": self._extract_brain_meta(meta),
             "created_at": meta.get("created_at", ""),
-            "score": round(float(score), 4),
+            "rrf_score": round(float(rrf_score), 6),
+            "score": round(float(rrf_score), 4),  # 归一化前先占位
             "summary": summary_src[:200] + "..." if len(summary_src) > 200 else summary_src,
             "content": full_content,
             "rerank_text": f"{meta.get('title', '')}\n{summary_src[:1200]}",
             "is_chunk": is_chunk,
             "chunk_index": int(meta.get("chunk_index") or 0),
+            **self._parent_fields_from_meta(meta),
         }
 
-    def search(self, query: str, n_results: int = 10, doc_type: str = None) -> list[dict]:
-        """RRF(向量, BM25) → 可选 Rerank → 按 parent 去重"""
+    @staticmethod
+    def _build_where(
+        doc_type: str = None,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+    ) -> Optional[dict]:
+        clauses = []
+        if doc_type:
+            clauses.append({"doc_type": normalize_doc_type(doc_type)})
+        if game:
+            clauses.append({"game": game})
+        if app:
+            clauses.append({"app": app})
+        if category:
+            clauses.append({"category": category})
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"$and": clauses}
+
+    def _postprocess_results(
+        self,
+        results: list[dict],
+        *,
+        n_results: int,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+        tags_any: list = None,
+        include_retired: bool = False,
+        filter_relaxed_hint: str = "",
+    ) -> list[dict]:
+        if not results:
+            return []
+
+        def _apply_penalties(rows: list[dict]) -> list[dict]:
+            out = []
+            for r in rows:
+                score = float(r.get("rrf_score") or r.get("score") or 0)
+                status = (r.get("governance_status") or "published").lower()
+                if not include_retired and status in RETIRED_STATUSES:
+                    continue
+                sq = (r.get("source_quality") or "").lower()
+                tags = [str(t).lower() for t in (r.get("tags") or [])]
+                if sq == "auto_curated" or "auto_curated" in tags:
+                    score *= self._auto_curated_penalty
+                if status == "stale":
+                    score *= self._stale_penalty
+                r = dict(r)
+                r["rrf_score"] = round(score, 6)
+                out.append(r)
+            out.sort(key=lambda x: -float(x.get("rrf_score") or 0))
+            return out
+
+        def _hard_filter(rows: list[dict]) -> list[dict]:
+            filtered = []
+            tag_set = {str(t).lower() for t in (tags_any or []) if t}
+            for r in rows:
+                if game and (r.get("game") or "") != game:
+                    # 也看 metadata
+                    if (r.get("metadata") or {}).get("game") != game:
+                        continue
+                if app and (r.get("app") or "") != app:
+                    if (r.get("metadata") or {}).get("app") != app:
+                        continue
+                if category and (r.get("category") or "") != category:
+                    if (r.get("metadata") or {}).get("category") != category:
+                        continue
+                if tag_set:
+                    row_tags = {str(t).lower() for t in (r.get("tags") or [])}
+                    if not tag_set.intersection(row_tags):
+                        continue
+                filtered.append(r)
+            return filtered
+
+        penalized = _apply_penalties(results)
+        filtered = _hard_filter(penalized)
+        relaxed = False
+        if (game or app or category or tags_any) and not filtered and penalized:
+            filtered = penalized
+            relaxed = True
+
+        max_rrf = max((float(r.get("rrf_score") or 0) for r in filtered), default=0.0)
+        final = []
+        for i, r in enumerate(filtered[:n_results]):
+            row = dict(r)
+            raw = float(row.get("rrf_score") or 0)
+            row["rank"] = i + 1
+            row["score"] = round((raw / max_rrf) if max_rrf > 0 else 0.0, 4)
+            if relaxed:
+                row["filter_relaxed"] = True
+                if filter_relaxed_hint:
+                    row["filter_hint"] = filter_relaxed_hint
+            final.append(row)
+        return final
+
+    def search(
+        self,
+        query: str,
+        n_results: int = 10,
+        doc_type: str = None,
+        *,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+        include_retired: bool = False,
+        tags_any: list = None,
+    ) -> list[dict]:
+        """RRF(向量, BM25) → 可选 Rerank → parent 去重 → 过滤降权 → 归一化 score"""
         query_emb = self._encode_query(query)
-        where_clause = {"doc_type": doc_type} if doc_type else None
+        where_clause = self._build_where(doc_type=doc_type, game=game, app=app, category=category)
+        # Chroma where 对缺失字段的旧数据不友好：硬过滤放到后处理，where 只用 doc_type
+        chroma_where = {"doc_type": normalize_doc_type(doc_type)} if doc_type else None
 
         try:
             vec_results = self.collection.query(
                 query_embeddings=[query_emb] if query_emb else None,
                 n_results=max(self._vec_candidates, n_results * 3),
-                where=where_clause,
+                where=chroma_where,
+                include=["metadatas", "documents", "distances"],
             )
         except Exception:
             vec_results = {"ids": [[]], "metadatas": [[]], "distances": [[]], "documents": [[]]}
@@ -514,10 +877,13 @@ class VectorEngine:
             for i, hit_id in enumerate(vec_results["ids"][0]):
                 meta = vec_results["metadatas"][0][i]
                 doc = vec_results["documents"][0][i] if vec_results["documents"] else ""
+                dist = None
+                if vec_results.get("distances") and vec_results["distances"][0]:
+                    dist = vec_results["distances"][0][i]
                 vec_ranked.append(hit_id)
-                hit_cache[hit_id] = {"meta": meta, "doc": doc}
+                hit_cache[hit_id] = {"meta": meta, "doc": doc, "distance": dist}
 
-        bm25_pairs = self._bm25_search(query, where_clause=where_clause)
+        bm25_pairs = self._bm25_search(query, where_clause=chroma_where)
         bm25_ranked = [doc_id for doc_id, _ in bm25_pairs]
         for doc_id, _ in bm25_pairs:
             if doc_id in hit_cache:
@@ -528,6 +894,7 @@ class VectorEngine:
                     hit_cache[doc_id] = {
                         "meta": doc_data["metadatas"][0],
                         "doc": doc_data["documents"][0] if doc_data["documents"] else "",
+                        "distance": None,
                     }
             except Exception:
                 pass
@@ -540,25 +907,41 @@ class VectorEngine:
             k=self._rrf_k,
         )
         ranked_ids = sorted(rrf_scores.keys(), key=lambda i: -rrf_scores[i])
+        # 多取一些供后处理过滤
+        fetch_n = max(self._rerank_top_n, n_results * 5)
         candidates: list[dict] = []
-        for hit_id in ranked_ids[: max(self._rerank_top_n, n_results * 3)]:
+        for hit_id in ranked_ids[:fetch_n]:
             cached = hit_cache.get(hit_id)
             if not cached:
                 continue
-            candidates.append(
-                self._hit_to_result(hit_id, cached["meta"], cached["doc"], rrf_scores[hit_id])
-            )
+            row = self._hit_to_result(hit_id, cached["meta"], cached["doc"], rrf_scores[hit_id])
+            if cached.get("distance") is not None:
+                row["vec_distance"] = round(float(cached["distance"]), 6)
+            candidates.append(row)
 
         if self._reranker and candidates:
             try:
                 candidates = self._reranker.rerank(
-                    query, candidates, top_k=max(self._rerank_top_n, n_results),
+                    query, candidates, top_k=max(self._rerank_top_n, n_results * 3),
                 )
+                # rerank 后用 rerank score 作为 rrf_score 继续后处理
+                for c in candidates:
+                    if "rerank_score" in c:
+                        c["rrf_score"] = float(c["rerank_score"])
             except Exception as exc:
                 logger.warning("Reranker 失败，回退 RRF 排序: %s", exc)
 
         deduped = dedupe_by_parent(candidates)
-        return deduped[:n_results]
+        return self._postprocess_results(
+            deduped,
+            n_results=n_results,
+            game=game,
+            app=app,
+            category=category,
+            tags_any=tags_any,
+            include_retired=include_retired,
+            filter_relaxed_hint="精确过滤无结果，已回退到未过滤排序",
+        )
 
     def get_by_id(self, item_id: str) -> Optional[dict]:
         results = self.collection.get(ids=[item_id])
@@ -589,31 +972,55 @@ class VectorEngine:
             "metadata": self._extract_brain_meta(meta),
             "created_at": meta.get("created_at", ""),
             "content": full_content,
+            **self._parent_fields_from_meta(meta),
         }
 
     def get_stats(self) -> dict:
         all_docs = self.collection.get()
         if not all_docs["ids"]:
-            return {"total": 0, "by_type": {}, "chunks": 0}
+            return {"total": 0, "by_type": {}, "by_status": {}, "ui_control_by_app": {}, "chunks": 0}
 
         parents: set[str] = set()
         by_type: dict[str, set[str]] = {}
+        by_status: dict[str, set[str]] = {}
+        ui_by_app: dict[str, set[str]] = {}
+        seen_meta: dict[str, dict] = {}
         for i, hit_id in enumerate(all_docs["ids"]):
             meta = all_docs["metadatas"][i]
             pid = parent_id_from_meta(meta, hit_id)
             parents.add(pid)
+            if pid not in seen_meta or not bool(meta.get("is_chunk")):
+                seen_meta[pid] = meta
             dt = meta.get("doc_type", "unknown")
             by_type.setdefault(dt, set()).add(pid)
+
+        for pid, meta in seen_meta.items():
+            status = meta.get("governance_status") or "published"
+            by_status.setdefault(status, set()).add(pid)
+            if meta.get("doc_type") == "ui_control":
+                app = meta.get("app") or (self._extract_brain_meta(meta).get("app") if meta else "") or "unknown"
+                ui_by_app.setdefault(str(app), set()).add(pid)
 
         return {
             "total": len(parents),
             "chunks": len(all_docs["ids"]),
             "by_type": {dt: len(ids) for dt, ids in sorted(by_type.items(), key=lambda x: -len(x[1]))},
+            "by_status": {st: len(ids) for st, ids in sorted(by_status.items(), key=lambda x: -len(x[1]))},
+            "ui_control_by_app": {app: len(ids) for app, ids in sorted(ui_by_app.items(), key=lambda x: -len(x[1]))},
         }
 
-    def _parent_documents(self, doc_type: str = None) -> list[dict]:
+    def _parent_documents(
+        self,
+        doc_type: str = None,
+        *,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+        governance_status: str = None,
+        include_retired: bool = True,
+    ) -> list[dict]:
         """按逻辑文档（parent_id）去重后的完整列表，用于浏览分页。"""
-        where_clause = {"doc_type": doc_type} if doc_type else None
+        where_clause = {"doc_type": normalize_doc_type(doc_type)} if doc_type else None
         all_docs = self.collection.get(where=where_clause)
         if not all_docs["ids"]:
             return []
@@ -639,25 +1046,78 @@ class VectorEngine:
                 "metadata": self._extract_brain_meta(meta),
                 "created_at": meta.get("created_at", ""),
                 "content": self._stored_content(meta, doc),
+                **self._parent_fields_from_meta(meta),
             }
             prev = parents.get(pid)
             if prev is None or priority < prev[0]:
                 parents[pid] = (priority, item)
 
         items = [row for _, row in parents.values()]
-        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return items
+        filtered = []
+        for it in items:
+            status = (it.get("governance_status") or "published").lower()
+            if not include_retired and status in RETIRED_STATUSES:
+                continue
+            if governance_status and status != governance_status.lower():
+                continue
+            if game and (it.get("game") or "") != game:
+                continue
+            if app and (it.get("app") or "") != app:
+                continue
+            if category and (it.get("category") or "") != category:
+                continue
+            filtered.append(it)
+        filtered.sort(key=lambda x: x.get("updated_at") or x.get("created_at", ""), reverse=True)
+        return filtered
 
-    def list_parents(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> tuple[list[dict], int]:
+    def list_parents(
+        self,
+        doc_type: str = None,
+        offset: int = 0,
+        limit: int = 50,
+        *,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+        governance_status: str = None,
+        include_retired: bool = True,
+    ) -> tuple[list[dict], int]:
         """按文档分页浏览，返回 (当前页条目, 文档总数)。"""
-        all_items = self._parent_documents(doc_type)
+        all_items = self._parent_documents(
+            doc_type,
+            game=game,
+            app=app,
+            category=category,
+            governance_status=governance_status,
+            include_retired=include_retired,
+        )
         total = len(all_items)
         if limit <= 0:
             return [], total
         return all_items[offset: offset + limit], total
 
-    def get_all(self, doc_type: str = None, offset: int = 0, limit: int = 50) -> list[dict]:
-        items, _ = self.list_parents(doc_type=doc_type, offset=offset, limit=limit)
+    def get_all(
+        self,
+        doc_type: str = None,
+        offset: int = 0,
+        limit: int = 50,
+        *,
+        game: str = None,
+        app: str = None,
+        category: str = None,
+        governance_status: str = None,
+        include_retired: bool = True,
+    ) -> list[dict]:
+        items, _ = self.list_parents(
+            doc_type=doc_type,
+            offset=offset,
+            limit=limit,
+            game=game,
+            app=app,
+            category=category,
+            governance_status=governance_status,
+            include_retired=include_retired,
+        )
         return items
 
     def get_all_texts(self) -> list[dict]:

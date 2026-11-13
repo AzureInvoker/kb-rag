@@ -74,3 +74,16 @@ lightrag:
   mode: mix
   # 图谱最大节点检索/展示上限（解除底层 1000 默认限制）
   max_graph_nodes: 10000
+
+# ═══════════════════════════════════════════
+# 知识治理（新鲜度 / 降权）
+# ═══════════════════════════════════════════
+governance:
+  freshness_sla_days:
+    rule: 60
+    test_case: 90
+    doc: 120
+    ui_control: 60
+  archive_after_stale_days: 180
+  auto_curated_penalty: 0.5
+  stale_penalty: 0.85

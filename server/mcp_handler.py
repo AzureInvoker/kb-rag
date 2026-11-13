@@ -13,8 +13,21 @@ from datetime import datetime
 from collections import Counter
 
 from .models import KnowledgeItem
+from .taxonomy import (
+    DOC_TYPES,
+    compute_next_verify_at,
+    normalize_doc_type,
+    require_ui_control_app,
+    should_index_graph,
+)
 
 logger = logging.getLogger("mcp_handler")
+
+_TYPE_ROUTE = (
+    "【类型】doc | test_case | rule | ui_control\n"
+    "【路由】文档/问答→doc；用例→test_case；规范→rule；控件→ui_control(必填app)；路径探索→mb_remember\n"
+    "【控件】ui_control 不进知识图谱；检索请带 app/screen\n"
+)
 
 
 # ── 输入清洗（共享） ──
@@ -40,10 +53,9 @@ def _make_item(args: dict) -> KnowledgeItem:
     if not title:
         raise ValueError("标题不能为空")
 
-    doc_type = _clean_text(args.get("doc_type", "doc")) or "doc"
+    doc_type = normalize_doc_type(_clean_text(args.get("doc_type", "doc")) or "doc")
     content = _clean_text(args.get("content", ""))
 
-    # 解析 metadata（支持 dict 或 JSON 字符串）
     raw_meta = args.get("metadata", {})
     if isinstance(raw_meta, str):
         try:
@@ -53,14 +65,34 @@ def _make_item(args: dict) -> KnowledgeItem:
     if not isinstance(raw_meta, dict):
         raw_meta = {}
 
-    return KnowledgeItem(
+    tags = _clean_list(args.get("tags", []))
+    category = _clean_text(args.get("category", "") or raw_meta.get("category", ""))
+    game = _clean_text(args.get("game", "") or raw_meta.get("game", ""))
+    app = require_ui_control_app(
+        doc_type,
+        args.get("app") or raw_meta.get("app"),
+        raw_meta,
+    )
+
+    item = KnowledgeItem(
         title=title,
         doc_type=doc_type,
         content=content,
         metadata=raw_meta,
-        tags=_clean_list(args.get("tags", [])),
+        tags=tags,
         created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        category=category,
+        game=game,
+        app=_clean_text(app or ""),
+        governance_status=_clean_text(args.get("governance_status", "")) or "published",
     )
+    try:
+        from config import get_config
+        sla = get_config().freshness_sla_days
+    except Exception:
+        sla = None
+    item.next_verify_at = compute_next_verify_at(item.doc_type, sla)
+    return item
 
 
 def _format_item_table(item: dict) -> str:
@@ -70,12 +102,35 @@ def _format_item_table(item: dict) -> str:
     if item.get("metadata"):
         meta_display = "\n" + json.dumps(item["metadata"], ensure_ascii=False, indent=2)
     return (
-        f"| ID | `{item['id']}` |\n"
-        f"| 类型 | {item['doc_type']} |\n"
-        f"| 标题 | {item['title']} |\n"
+        f"| ID | `{item.get('id', '')}` |\n"
+        f"| 类型 | {item.get('doc_type', '')} |\n"
+        f"| 标题 | {item.get('title', '')} |\n"
+        f"| 状态 | {item.get('governance_status', '-')} |\n"
+        f"| app/game | {item.get('app') or '-'} / {item.get('game') or '-'} |\n"
         f"| 标签 | {tags_str} |\n"
         f"| 创建时间 | {item.get('created_at', '-')} |\n"
         + (f"| metadata | {meta_display} |\n" if meta_display else "")
+    )
+
+
+def _format_search_hit(r: dict) -> str:
+    score = float(r.get("score") or 0)
+    bars = max(0, min(20, int(score * 20)))
+    score_bar = "█" * bars + "░" * (20 - bars)
+    tags_str = f" [{', '.join(r['tags'])}]" if r.get("tags") else ""
+    status = r.get("governance_status") or "-"
+    extra = ""
+    if r.get("filter_relaxed"):
+        extra = f"\n> ⚠️ {r.get('filter_hint') or '精确过滤无结果，已回退'}\n"
+    return (
+        f"### {r.get('title', '')}  [{score_bar}] {score:.2f}\n\n"
+        f"| 字段 | 值 |\n|------|-----|\n"
+        f"| ID | `{r.get('id', '')}` |\n"
+        f"| 类型 | {r.get('doc_type', '')} |\n"
+        f"| 状态 | {status} |\n"
+        f"| rank / rrf | {r.get('rank', '-')} / {r.get('rrf_score', '-')} |\n"
+        f"| 标签 | {tags_str or '-'} |\n"
+        f"{extra}\n摘要: {r.get('summary', '')}\n\n---\n\n"
     )
 
 
@@ -269,27 +324,49 @@ def _recall_brain(engine, pathsig: str):
 
 # ── MCP 工具定义 ──
 
+_DOC_TYPE_PROP = {
+    "type": "string",
+    "enum": list(DOC_TYPES),
+    "description": "doc=文档/问答; test_case=用例; rule=规范; ui_control=控件(必填app)",
+}
+
 TOOLS = [
     {
         "name": "kb_search",
-        "description": "基础语义搜索（ChromaDB + BM25 向量引擎）。\n【使用流程】① 不确定搜什么时先调 kb_stats 看有哪些 doc_type → ② 输入关键词搜索 → ③ 结果不够精准时加 doc_type 缩小范围 → ④ 需要跨文档关联时换 kb_agentic_search 或 kb_graph_search",
+        "description": (
+            "基础语义搜索（ChromaDB + BM25）。\n" + _TYPE_ROUTE +
+            "【使用流程】① kb_stats 看类型分布 → ② 关键词搜索，可用 doc_type/app/game 缩小范围 → ③ 不够准再换 kb_agentic_search\n"
+            "返回 score 为列表内归一化分；另有 rrf_score/rank。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索关键词或自然语言描述"},
                 "n_results": {"type": "number", "description": "返回结果数量（默认5，最多20）", "default": 5},
-                "doc_type": {"type": "string", "description": "按文档类型筛选（如 test_case/doc/faq）"},
+                "doc_type": _DOC_TYPE_PROP,
+                "app": {"type": "string", "description": "应用过滤（ui_control 推荐）"},
+                "game": {"type": "string", "description": "游戏过滤"},
+                "category": {"type": "string", "description": "业务域过滤"},
+                "include_retired": {"type": "boolean", "description": "是否包含 deprecated/archived", "default": False},
             },
             "required": ["query"],
         },
     },
     {
         "name": "kb_list",
-        "description": "浏览知识条目列表（支持按 doc_type 筛选和分页）。\n【使用流程】① 先调 kb_stats 看总览 → ② 用 kb_list 按 type 浏览 → ③ 看到感兴趣条目用 kb_get 看详情",
+        "description": "浏览知识条目列表（支持按类型/app/game/状态筛选和分页）。\n" + _TYPE_ROUTE,
         "inputSchema": {
             "type": "object",
             "properties": {
-                "doc_type": {"type": "string", "description": "按文档类型筛选"},
+                "doc_type": _DOC_TYPE_PROP,
+                "app": {"type": "string"},
+                "game": {"type": "string"},
+                "category": {"type": "string"},
+                "governance_status": {
+                    "type": "string",
+                    "enum": ["published", "stale", "deprecated", "archived"],
+                },
+                "include_retired": {"type": "boolean", "default": True},
                 "offset": {"type": "number", "description": "分页偏移"},
                 "limit": {"type": "number", "description": "每页数量（默认50，最多200）", "default": 50},
             },
@@ -309,27 +386,35 @@ TOOLS = [
     },
     {
         "name": "kb_stats",
-        "description": "获取知识库统计信息（总数、各文档类型分布）。\n【使用场景】① 第一次用先调此工具了解知识库规模 ② 确定有哪些 doc_type 后再做针对性搜索或添加",
+        "description": "知识库统计（总数、by_type、by_status、ui_control_by_app）。建议先调本工具再按类型搜索或添加。\n" + _TYPE_ROUTE,
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "kb_add",
-        "description": "添加单条知识条目。\n【新增字段说明】\n  - title：必填，条目标题\n  - doc_type：文档类型，可自定义（如 test_case/doc/faq/wiki），默认 doc\n  - content：正文内容（嵌入主要基于此字段，前800字）\n  - metadata：类型专属的灵活 JSON 字段。不同类型建议的字段：\n    · test_case → {\"module\":\"登录\", \"priority\":\"P0\", \"preconditions\":\"已登录\", \"expected\":\"跳转首页\"}\n    · doc       → {\"author\":\"张三\", \"source\":\"内部文档\", \"version\":\"1.0\"}\n    · faq       → {\"category\":\"账户问题\", \"answer\":\"具体回答\"}\n  - tags：标签列表\n【使用流程】先在 kb_stats 中确认是否存在目标 doc_type → 选类型填写添加",
+        "description": (
+            "添加单条知识条目。\n" + _TYPE_ROUTE +
+            "【字段】title 必填；doc_type 默认 doc；ui_control 必填 app；"
+            "metadata 可放 screen/control_id/bounds 等；test_case 建议 module/priority。\n"
+            "路径探索经验请用 mb_remember，不要写成 kb。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "标题（必填）"},
-                "doc_type": {"type": "string", "description": "文档类型，如 test_case/doc/faq（默认 doc）"},
+                "doc_type": _DOC_TYPE_PROP,
                 "content": {"type": "string", "description": "正文内容"},
-                "metadata": {"type": "object", "description": "类型专属的灵活字段，如 {\"module\": \"登录\", \"priority\": \"P0\"}"},
+                "metadata": {"type": "object", "description": "类型专属字段"},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"},
+                "category": {"type": "string"},
+                "game": {"type": "string"},
+                "app": {"type": "string", "description": "ui_control 必填"},
             },
             "required": ["title"],
         },
     },
     {
         "name": "kb_add_batch",
-        "description": "批量添加知识条目（逐条清洗，单条失败不阻塞整体）。字段规则同 kb_add。返回成功/失败统计 + 新增条目 ID 列表。\n【使用场景】需要一次性录入多条同类型数据时使用",
+        "description": "批量添加知识条目。字段规则同 kb_add；ui_control 不进图谱。\n" + _TYPE_ROUTE,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -340,10 +425,13 @@ TOOLS = [
                         "type": "object",
                         "properties": {
                             "title": {"type": "string", "description": "标题（必填）"},
-                            "doc_type": {"type": "string", "description": "文档类型（默认 doc）"},
+                            "doc_type": _DOC_TYPE_PROP,
                             "content": {"type": "string", "description": "正文"},
                             "metadata": {"type": "object", "description": "类型专属字段"},
                             "tags": {"type": "array", "items": {"type": "string"}, "description": "标签"},
+                            "category": {"type": "string"},
+                            "game": {"type": "string"},
+                            "app": {"type": "string"},
                         },
                         "required": ["title"],
                     },
@@ -353,13 +441,54 @@ TOOLS = [
         },
     },
     {
+        "name": "kb_update",
+        "description": "按 ID 更新知识条目。改正文/标题会重建向量；只改 meta/status 则不 reembed。\n" + _TYPE_ROUTE,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "条目 ID"},
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "doc_type": _DOC_TYPE_PROP,
+                "metadata": {"type": "object"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "category": {"type": "string"},
+                "game": {"type": "string"},
+                "app": {"type": "string"},
+                "governance_status": {
+                    "type": "string",
+                    "enum": ["published", "stale", "deprecated", "archived"],
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "kb_deprecate",
+        "description": "将条目标记为 deprecated（默认检索不可见）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "kb_reverify",
+        "description": "重新验证：status→published 并刷新 next_verify_at。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
         "name": "kb_delete",
-        "description": "删除知识条目。支持两种模式：按 ID 删除单条，或按 doc_type 批量删除。\n【使用场景】① 清理测试数据 ② 删除错误的录入 ③ 整批替换某类型数据\n注意：批量删除不可撤销，删除不同步清除 LightRAG 图谱中的对应实体",
+        "description": "删除知识条目。支持按 ID 或按 doc_type 批量。不级联清除 LightRAG 图谱实体。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "条目 ID（按 ID 删单条时填写）"},
-                "doc_type": {"type": "string", "description": "文档类型，删除该类型下所有条目（批量模式）"},
+                "doc_type": _DOC_TYPE_PROP,
             },
             "required": [],
         },
@@ -378,14 +507,21 @@ TOOLS = [
     },
     {
         "name": "kb_agentic_search",
-        "description": "【推荐】自适应检索——自动融合向量搜索 + 知识图谱增强。先走 ChromaDB 做语义匹配，再调用 LightRAG 图谱补充实体关系。\n【适用场景】① 复杂问题不确定怎么精确表达关键词 ② 需要同时看语义匹配和相关实体关系 ③ kb_search 首轮不够理想时的深入检索\n【使用流程】先用 kb_search 试 → 结果不够好时换本工具看有没有图谱增强信息 → 想看纯推理用 kb_graph_search\n【内容控制】summary_only=true 只显示摘要（200 字符），false（默认）显示完整内容（最多 4000 字符/条）",
+        "description": (
+            "【推荐】自适应检索——向量 + 可选图谱增强。\n" + _TYPE_ROUTE +
+            "summary_only=true 只显示摘要。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索关键词"},
                 "n_results": {"type": "number", "description": "返回结果数量（默认5，最多20）", "default": 5},
-                "doc_type": {"type": "string", "description": "按文档类型筛选"},
-                "summary_only": {"type": "boolean", "description": "只显示摘要（200 字符）而非完整内容，节省上下文", "default": False},
+                "doc_type": _DOC_TYPE_PROP,
+                "app": {"type": "string"},
+                "game": {"type": "string"},
+                "category": {"type": "string"},
+                "include_retired": {"type": "boolean", "default": False},
+                "summary_only": {"type": "boolean", "description": "只显示摘要", "default": False},
             },
             "required": ["query"],
         },
@@ -423,7 +559,7 @@ TOOLS = [
     },
     {
         "name": "mb_remember",
-        "description": "【脑记忆】记录一条路径探索经验。告诉 agent 这条路走完后的感受和结果。\n"
+        "description": "【脑记忆/路径探索】记录一条路径探索经验（爽感）。经验/踩坑只写这里，不要用 kb_add。\n"
             "【爽感值规则】\n"
             "  - 正值: 顺利、高效、得到想要的结果（+1~+10）\n"
             "  - 负值: 失败、踩坑、浪费 token（-1~-10）\n"
@@ -499,40 +635,43 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             query=query,
             n_results=min(int(args.get("n_results", 5)), 20),
             doc_type=args.get("doc_type"),
+            game=args.get("game") or None,
+            app=args.get("app") or None,
+            category=args.get("category") or None,
+            include_retired=bool(args.get("include_retired", False)),
         )
         if not results:
             return {"content": [{"type": "text", "text": f"未找到与「{query}」相关的条目"}]}
         text = f"## 🔍 搜索「{query}」共找到 {len(results)} 条\n\n"
         for r in results:
-            score_bar = "█" * int(r["score"] * 20) + "░" * (20 - int(r["score"] * 20))
-            tags_str = f" [{', '.join(r['tags'])}]" if r.get("tags") else ""
-            text += (
-                f"### {r['title']}  [{score_bar}] {r['score']:.2f}\n\n"
-                f"| 字段 | 值 |\n"
-                f"|------|-----|\n"
-                f"| ID | `{r['id']}` |\n"
-                f"| 类型 | {r['doc_type']} |\n"
-                f"| 标签 | {tags_str or '-'} |\n"
-                f"\n摘要: {r.get('summary', '')}\n\n---\n\n"
-            )
+            text += _format_search_hit(r)
         return {"content": [{"type": "text", "text": text.strip()}]}
 
     # ── kb_list ──
     elif name == "kb_list":
         target = _resolve_engine(args.get("doc_type"))
-        items = target.get_all(
+        offset = int(args.get("offset", 0))
+        limit = min(int(args.get("limit", 50)), 200)
+        items, total = target.list_parents(
             doc_type=args.get("doc_type"),
-            offset=int(args.get("offset", 0)),
-            limit=min(int(args.get("limit", 50)), 200),
+            offset=offset,
+            limit=limit,
+            game=args.get("game") or None,
+            app=args.get("app") or None,
+            category=args.get("category") or None,
+            governance_status=args.get("governance_status") or None,
+            include_retired=bool(args.get("include_retired", True)),
         )
-        total = target.count_parents(args.get("doc_type"))
         if not items:
             return {"content": [{"type": "text", "text": "暂无条目（或筛选条件无匹配）"}]}
         text = f"## 📋 条目列表（共 {total} 条，本页 {len(items)} 条）\n\n"
         for i, item in enumerate(items):
             tags_str = f" [{', '.join(item['tags'])}]" if item.get("tags") else ""
             text += f"{i+1}. **{item['title']}**\n"
-            text += f"   `{item['id']}` | {item['doc_type']}{tags_str}\n"
+            text += (
+                f"   `{item['id']}` | {item['doc_type']} | "
+                f"{item.get('governance_status', '-')}{tags_str}\n"
+            )
         return {"content": [{"type": "text", "text": text.strip()}]}
 
     # ── kb_get ──
@@ -556,8 +695,17 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
         if stats.get("by_type"):
             text += "### 按类型\n\n"
             for dt, count in stats["by_type"].items():
-                bar = "█" * count + "░" * max(0, min(40 - count, 40))
+                bar = "█" * min(count, 40)
                 text += f"- {dt}: {count} 条  {bar}\n"
+        if stats.get("by_status"):
+            text += "\n### 按状态\n\n"
+            for st, count in stats["by_status"].items():
+                text += f"- {st}: {count} 条\n"
+        if stats.get("ui_control_by_app"):
+            text += "\n### ui_control 按 app\n\n"
+            for app_name, count in stats["ui_control_by_app"].items():
+                text += f"- {app_name}: {count} 条\n"
+        text += f"\n{_TYPE_ROUTE}"
         return {"content": [{"type": "text", "text": text.strip()}]}
 
     # ── kb_add ──
@@ -567,8 +715,11 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"❌ {e}"}]}
         item.id = item.gen_id()
-        engine.add(item)
-        if lightrag_engine.is_available():
+        try:
+            engine.add(item)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"❌ {e}"}]}
+        if should_index_graph(item.doc_type) and lightrag_engine.is_available():
             lightrag_engine.insert([item.get_lightrag_text()], ids=[item.id])
         return {
             "content": [{
@@ -599,9 +750,10 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
                 added.append(item)
             except ValueError as e:
                 errors.append(f"第 {i+1} 条：{e}")
-        if added and lightrag_engine.is_available():
-            texts = [it.get_lightrag_text() for it in added]
-            ids = [it.id for it in added]
+        graph_items = [it for it in added if should_index_graph(it.doc_type)]
+        if graph_items and lightrag_engine.is_available():
+            texts = [it.get_lightrag_text() for it in graph_items]
+            ids = [it.id for it in graph_items]
             lightrag_engine.insert(texts, ids=ids)
         summary = f"✅ 成功添加 {len(added)} 条"
         if errors:
@@ -617,6 +769,48 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             if len(added) > 10:
                 summary += f"  ... 还有 {len(added) - 10} 条\n"
         return {"content": [{"type": "text", "text": summary}]}
+
+    # ── kb_update ──
+    elif name == "kb_update":
+        item_id = (args.get("id") or "").strip()
+        if not item_id:
+            return {"content": [{"type": "text", "text": "❌ 请提供 id"}]}
+        fields = {}
+        for key in (
+            "title", "content", "doc_type", "metadata", "tags",
+            "category", "game", "app", "governance_status",
+        ):
+            if key in args and args.get(key) is not None:
+                fields[key] = args.get(key)
+        if not fields:
+            return {"content": [{"type": "text", "text": "❌ 请至少提供一个要更新的字段"}]}
+        try:
+            updated = engine.update(item_id, **fields)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"❌ {e}"}]}
+        if not updated:
+            return {"content": [{"type": "text", "text": f"❌ 条目 `{item_id}` 不存在"}]}
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✅ 已更新\n\n{_format_item_table(updated)}\n\n{(updated.get('content') or '')[:500]}",
+            }]
+        }
+
+    # ── kb_deprecate / kb_reverify ──
+    elif name == "kb_deprecate":
+        item_id = (args.get("id") or "").strip()
+        updated = engine.set_status(item_id, "deprecated")
+        if not updated:
+            return {"content": [{"type": "text", "text": f"❌ 条目 `{item_id}` 不存在"}]}
+        return {"content": [{"type": "text", "text": f"✅ 已标记 deprecated\n\n{_format_item_table(updated)}"}]}
+
+    elif name == "kb_reverify":
+        item_id = (args.get("id") or "").strip()
+        updated = engine.set_status(item_id, "published", refresh_verify=True)
+        if not updated:
+            return {"content": [{"type": "text", "text": f"❌ 条目 `{item_id}` 不存在"}]}
+        return {"content": [{"type": "text", "text": f"✅ 已 reverify\n\n{_format_item_table(updated)}"}]}
 
     # ── kb_delete ──
     elif name == "kb_delete":
@@ -668,12 +862,20 @@ def handle_tool(name: str, args: dict, engine, lightrag_engine, mem_engine=None)
             query=query,
             n_results=n_results,
             doc_type=args.get("doc_type"),
+            game=args.get("game") or None,
+            app=args.get("app") or None,
+            category=args.get("category") or None,
+            include_retired=bool(args.get("include_retired", False)),
         )
         text = f"## 🔍 自适应检索「{query}」\n\n"
         if chroma_results:
             text += f"### 📋 向量匹配结果（{len(chroma_results)} 条）\n\n"
             for r in chroma_results:
-                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n"
+                text += (
+                    f"**{r['title']}** [{r['score']:.2f}] "
+                    f"(rrf={r.get('rrf_score', '-')}, rank={r.get('rank', '-')})\n"
+                    f"`{r['id']}` | {r['doc_type']} | {r.get('governance_status', '-')}\n"
+                )
                 if summary_only:
                     text += f"> 摘要: {r.get('summary', '')}\n\n"
                 else:
@@ -1241,8 +1443,11 @@ async def _async_add(args: dict, engine, lightrag_engine) -> dict:
     except ValueError as e:
         return {"content": [{"type": "text", "text": f"❌ {e}"}]}
     item.id = item.gen_id()
-    engine.add(item)
-    if lightrag_engine.is_available():
+    try:
+        engine.add(item)
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"❌ {e}"}]}
+    if should_index_graph(item.doc_type) and lightrag_engine.is_available():
         await lightrag_engine.async_insert([item.get_lightrag_text()], ids=[item.id])
     return {
         "content": [{
@@ -1274,9 +1479,10 @@ async def _async_add_batch(args: dict, engine, lightrag_engine) -> dict:
             added.append(item)
         except ValueError as e:
             errors.append(f"第 {i+1} 条：{e}")
-    if added and lightrag_engine.is_available():
-        texts = [it.get_lightrag_text() for it in added]
-        ids = [it.id for it in added]
+    graph_items = [it for it in added if should_index_graph(it.doc_type)]
+    if graph_items and lightrag_engine.is_available():
+        texts = [it.get_lightrag_text() for it in graph_items]
+        ids = [it.id for it in graph_items]
         await lightrag_engine.async_insert(texts, ids=ids)
 
     summary = f"✅ 成功添加 {len(added)} 条"
@@ -1328,7 +1534,18 @@ async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> d
         # 并行执行向量搜索与图谱搜索（图谱设置 3 秒超时熔断）
         import asyncio
 
-        tasks = [asyncio.to_thread(engine.search, query=query, n_results=n_results, doc_type=args.get("doc_type"))]
+        tasks = [
+            asyncio.to_thread(
+                engine.search,
+                query,
+                n_results,
+                args.get("doc_type"),
+                game=args.get("game") or None,
+                app=args.get("app") or None,
+                category=args.get("category") or None,
+                include_retired=bool(args.get("include_retired", False)),
+            )
+        ]
         has_graph = lightrag_engine.is_available()
         if has_graph:
             tasks.append(asyncio.wait_for(lightrag_engine.async_search(query, n_results), timeout=3.0))
@@ -1353,7 +1570,11 @@ async def _async_graph_tool(name: str, args: dict, engine, lightrag_engine) -> d
         if chroma_results:
             text += f"### 📋 向量匹配结果（{len(chroma_results)} 条）\n\n"
             for r in chroma_results:
-                text += f"**{r['title']}** [{r['score']:.2f}]\n`{r['id']}` | {r['doc_type']}\n"
+                text += (
+                    f"**{r['title']}** [{r['score']:.2f}] "
+                    f"(rrf={r.get('rrf_score', '-')})\n"
+                    f"`{r['id']}` | {r['doc_type']} | {r.get('governance_status', '-')}\n"
+                )
                 if summary_only:
                     text += f"> 摘要: {r.get('summary', '')}\n\n"
                 else:
