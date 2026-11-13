@@ -409,9 +409,10 @@
         <option value="500">最多 500 节点</option>
       </select>
       <button class="btn btn-primary" onclick="loadGraph()">查询子图</button>
+      <button class="btn" onclick="resetGraphView()" title="复位视图">复位</button>
       <button class="btn" onclick="clearGraph()" title="清空画布">清空</button>
       <span id="graphInfo" class="text-muted" style="font-size:12px;"></span>
-      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动平移 · 滚轮缩放 · 双击聚焦 · R 复位</span>
+      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动平移 · 滚轮缩放 · 双击聚焦 · R/复位</span>
     </div>
     <div class="graph-stage">
       <div class="graph-viewport">
@@ -808,6 +809,11 @@ async function loadStats() {
 
 let graphSimulation = null;
 let graphResizeHandler = null;
+let graphViewReset = null;
+
+function resetGraphView() {
+  if (typeof graphViewReset === 'function') graphViewReset();
+}
 
 function clearGraph() {
   const canvas = document.getElementById('graphCanvas');
@@ -823,6 +829,7 @@ function clearGraph() {
     window.removeEventListener('resize', graphResizeHandler);
     graphResizeHandler = null;
   }
+  graphViewReset = null;
   canvas.style.display = 'none';
   empty.style.display = 'flex';
   empty.textContent = '输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。';
@@ -903,13 +910,14 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
 
   const nCount = nodes.length;
   const isDense = nCount > 120;
-  const REPULSION = isDense ? 1800 : 3200;
-  const ATTRACTION = 0.012;
-  const DAMPING = 0.86;
-  const CENTER_FORCE = 0.015;
-  const EDGE_LENGTH = isDense ? 70 : 100;
-  const COOLDOWN_FRAMES = isDense ? 90 : 140;
-  const CELL = isDense ? 80 : 110;
+  const REPULSION = isDense ? 900 : 1600;
+  const ATTRACTION = 0.02;
+  const DAMPING = 0.82;
+  const CENTER_FORCE = 0.04;
+  const EDGE_LENGTH = isDense ? 60 : 90;
+  const COOLDOWN_FRAMES = isDense ? 80 : 120;
+  const CELL = isDense ? 70 : 100;
+  const WORLD_BOUND = Math.max(cssW, cssH) * 1.8;
 
   // degree → radius
   const degree = {};
@@ -968,29 +976,76 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
   let neighborSet = new Set();
   let didMove = false;
 
-  function zoomToFit(pad = 56) {
-    if (!nodeList.length) return;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const n of nodeList) {
-      if (n.x < minX) minX = n.x;
-      if (n.x > maxX) maxX = n.x;
-      if (n.y < minY) minY = n.y;
-      if (n.y > maxY) maxY = n.y;
-    }
-    const gw = Math.max(1, maxX - minX);
-    const gh = Math.max(1, maxY - minY);
-    zoom = Math.max(0.18, Math.min((cssW - pad * 2) / gw, (cssH - pad * 2) / gh, 1.6));
-    panX = cssW / 2 - (minX + maxX) / 2 * zoom;
-    panY = cssH / 2 - (minY + maxY) / 2 * zoom;
+  function percentile(sorted, t) {
+    if (!sorted.length) return 0;
+    const i = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * t)));
+    return sorted[i];
   }
 
-  function focusNode(n, z = 1.35) {
-    if (!n) return;
-    zoom = Math.max(0.6, Math.min(2.2, z));
+  function sanitizeNodes() {
+    const cx = cssW / 2, cy = cssH / 2;
+    for (const n of nodeList) {
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+        n.x = cx; n.y = cy; n.vx = 0; n.vy = 0;
+        continue;
+      }
+      n.x = Math.max(cx - WORLD_BOUND, Math.min(cx + WORLD_BOUND, n.x));
+      n.y = Math.max(cy - WORLD_BOUND, Math.min(cy + WORLD_BOUND, n.y));
+      if (!Number.isFinite(n.vx)) n.vx = 0;
+      if (!Number.isFinite(n.vy)) n.vy = 0;
+      n.vx = Math.max(-40, Math.min(40, n.vx));
+      n.vy = Math.max(-40, Math.min(40, n.vy));
+    }
+  }
+
+  // 用分位数定界，避免单个飞出节点把 zoom 拉到几乎看不见
+  function zoomToFit(pad = 48) {
+    sanitizeNodes();
+    const xs = nodeList.map(n => n.x).filter(Number.isFinite).sort((a, b) => a - b);
+    const ys = nodeList.map(n => n.y).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!xs.length) {
+      zoom = 1; panX = 0; panY = 0;
+      return;
+    }
+    let minX = percentile(xs, 0.05);
+    let maxX = percentile(xs, 0.95);
+    let minY = percentile(ys, 0.05);
+    let maxY = percentile(ys, 0.95);
+    // 保证有最小包围盒，防止全挤在一点时 zoom 爆炸
+    if (maxX - minX < 80) { const m = (minX + maxX) / 2; minX = m - 40; maxX = m + 40; }
+    if (maxY - minY < 80) { const m = (minY + maxY) / 2; minY = m - 40; maxY = m + 40; }
+    const gw = Math.max(1, maxX - minX);
+    const gh = Math.max(1, maxY - minY);
+    let next = Math.min((cssW - pad * 2) / gw, (cssH - pad * 2) / gh, 1.4);
+    next = Math.max(0.4, next);
+    if (!Number.isFinite(next)) next = 1;
+    zoom = next;
+    panX = cssW / 2 - (minX + maxX) / 2 * zoom;
+    panY = cssH / 2 - (minY + maxY) / 2 * zoom;
+    if (!Number.isFinite(panX) || !Number.isFinite(panY)) {
+      zoom = 1; panX = 0; panY = 0;
+    }
+  }
+
+  function focusNode(n, z = 1.2) {
+    if (!n || !Number.isFinite(n.x) || !Number.isFinite(n.y)) return;
+    zoom = Math.max(0.7, Math.min(1.8, z));
     panX = cssW / 2 - n.x * zoom;
     panY = cssH / 2 - n.y * zoom;
     draw();
   }
+
+  function resetView() {
+    zoomToFit();
+    const seed = nodeMap[seedId];
+    if (seed && Number.isFinite(seed.x)) {
+      // 定界后再把种子实体拉回视野中心，避免「算完布局图就空了」
+      panX = cssW / 2 - seed.x * zoom;
+      panY = cssH / 2 - seed.y * zoom;
+    }
+    draw();
+  }
+  graphViewReset = resetView;
 
   function canvasPoint(e) {
     const r = canvas.getBoundingClientRect();
@@ -1106,8 +1161,8 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
 
       for (const a of nodeList) {
         if (a === dragNode) continue;
-        a.vx += (cssW / 2 - a.x) * CENTER_FORCE * cooling * 0.08;
-        a.vy += (cssH / 2 - a.y) * CENTER_FORCE * cooling * 0.08;
+        a.vx += (cssW / 2 - a.x) * CENTER_FORCE * cooling * 0.12;
+        a.vy += (cssH / 2 - a.y) * CENTER_FORCE * cooling * 0.12;
 
         const cx = (a.x / CELL) | 0;
         const cy = (a.y / CELL) | 0;
@@ -1119,10 +1174,11 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
               if (b.id <= a.id) continue;
               let dx = a.x - b.x;
               let dy = a.y - b.y;
-              let dist2 = dx * dx + dy * dy || 1;
+              let dist2 = dx * dx + dy * dy;
+              if (!Number.isFinite(dist2) || dist2 < 1) dist2 = 1;
               if (dist2 > CELL * CELL * 2.5) continue;
               let dist = Math.sqrt(dist2);
-              let force = (REPULSION / dist2) * cooling;
+              let force = Math.min(80, (REPULSION / dist2) * cooling);
               let fx = (dx / dist) * force;
               let fy = (dy / dist) * force;
               a.vx += fx; a.vy += fy;
@@ -1138,7 +1194,8 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
         if (!a || !b) continue;
         let dx = b.x - a.x;
         let dy = b.y - a.y;
-        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (!Number.isFinite(dist) || dist < 1) dist = 1;
         let force = (dist - EDGE_LENGTH) * ATTRACTION * cooling;
         let fx = (dx / dist) * force;
         let fy = (dy / dist) * force;
@@ -1155,6 +1212,7 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
         n.y += n.vy;
         energy += n.vx * n.vx + n.vy * n.vy;
       }
+      sanitizeNodes();
 
       // 降频绘制：前段每帧，后期隔帧
       if (frameCount < 40 || frameCount % 2 === 0) draw();
@@ -1164,9 +1222,7 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
         graphSimulation = animId;
       } else {
         settled = true;
-        zoomToFit();
-        draw();
-        // 自动选中焦点实体
+        resetView();
         if (!selectedNode && seedId && nodeMap[seedId]) {
           setSelection(nodeMap[seedId]);
         }
@@ -1181,18 +1237,22 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
   }
 
   function draw() {
+    if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(panX) || !Number.isFinite(panY)) {
+      zoom = 1; panX = 0; panY = 0;
+    }
     ctx.clearRect(0, 0, cssW, cssH);
     ctx.save();
     ctx.translate(panX, panY);
     ctx.scale(zoom, zoom);
 
-    const showAllLabels = zoom >= 1.1 && nCount <= 80;
-    const showHubLabels = zoom >= 0.55;
+    const showAllLabels = zoom >= 1.05 && nCount <= 80;
+    const showHubLabels = zoom >= 0.5;
 
     for (const e of edgeList) {
       const a = nodeMap[e.source];
       const b = nodeMap[e.target];
       if (!a || !b) continue;
+      if (!Number.isFinite(a.x) || !Number.isFinite(b.x)) continue;
       const active = selectedNode && (
         (a.id === selectedNode.id || b.id === selectedNode.id)
       );
@@ -1200,12 +1260,13 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = active ? 'rgba(91,159,212,0.85)' : (dim ? 'rgba(48,54,61,0.25)' : 'rgba(48,54,61,0.55)');
-      ctx.lineWidth = (active ? 1.6 : 0.7) / zoom;
+      ctx.strokeStyle = active ? 'rgba(91,159,212,0.9)' : (dim ? 'rgba(48,54,61,0.35)' : 'rgba(48,54,61,0.6)');
+      ctx.lineWidth = (active ? 1.8 : 0.8) / zoom;
       ctx.stroke();
     }
 
     for (const n of nodeList) {
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
       const isSel = selectedNode && selectedNode.id === n.id;
       const isHover = hoverNode && hoverNode.id === n.id;
       const isNeigh = neighborSet.has(n.id);
@@ -1222,9 +1283,10 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
 
       ctx.beginPath();
       ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = dim ? 'rgba(88,166,255,0.28)' : color;
+      // 选中时非邻接只略降透明度，避免「图消失了」的错觉
+      ctx.fillStyle = dim ? 'rgba(88,166,255,0.55)' : color;
       ctx.fill();
-      ctx.strokeStyle = isSel ? '#fff' : (isNeigh ? 'rgba(91,159,212,0.9)' : 'rgba(255,255,255,0.35)');
+      ctx.strokeStyle = isSel ? '#fff' : (isNeigh ? 'rgba(91,159,212,0.95)' : 'rgba(255,255,255,0.4)');
       ctx.lineWidth = (isSel ? 2.2 : 1) / zoom;
       ctx.stroke();
 
@@ -1237,7 +1299,7 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
         ctx.lineWidth = 3 / zoom;
         ctx.strokeStyle = 'rgba(11,15,20,0.75)';
         ctx.strokeText(label, n.x, n.y + r + 12);
-        ctx.fillStyle = dim ? 'rgba(232,238,245,0.45)' : '#e8eef5';
+        ctx.fillStyle = dim ? 'rgba(232,238,245,0.65)' : '#e8eef5';
         ctx.fillText(label, n.x, n.y + r + 12);
       }
     }
@@ -1344,8 +1406,7 @@ function renderGraph(canvas, nodes, edges, detailEl, focusId) {
   canvas.tabIndex = 0;
   canvas.onkeydown = (e) => {
     if (e.key === 'r' || e.key === 'R') {
-      zoomToFit();
-      draw();
+      resetView();
     }
   };
 
