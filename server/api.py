@@ -152,7 +152,8 @@ async def search(
     n_results: int = Query(default=10, le=20),
     doc_type: str = Query(default=None, description="文档类型筛选"),
     game: Optional[str] = Query(default=None),
-    app: Optional[str] = Query(default=None),
+    # 参数名不能叫 app，否则会遮蔽 FastAPI 的 app 对象
+    app_name: Optional[str] = Query(default=None, alias="app", description="应用过滤"),
     category: Optional[str] = Query(default=None),
     include_retired: bool = Query(default=False),
 ):
@@ -163,7 +164,7 @@ async def search(
         n_results,
         doc_type,
         game=game,
-        app=app,
+        app=app_name,
         category=category,
         include_retired=include_retired,
     )
@@ -179,7 +180,8 @@ async def list_items(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
     game: Optional[str] = Query(default=None),
-    app: Optional[str] = Query(default=None),
+    # 参数名不能叫 app，否则会遮蔽 FastAPI 的 app 对象
+    app_name: Optional[str] = Query(default=None, alias="app", description="应用过滤"),
     category: Optional[str] = Query(default=None),
     governance_status: Optional[str] = Query(default=None),
     include_retired: bool = Query(default=True),
@@ -192,7 +194,7 @@ async def list_items(
             offset,
             limit,
             game=game,
-            app=app,
+            app=app_name,
             category=category,
             governance_status=governance_status,
             include_retired=include_retired,
