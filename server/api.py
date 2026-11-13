@@ -538,98 +538,78 @@ def mcp_info():
 
 
 class MCPMessage(BaseModel):
+    """JSON-RPC 2.0：id 可为 string/number/null；Cursor 等客户端常用字符串 id。"""
+    model_config = {"extra": "allow"}
+
     jsonrpc: str = "2.0"
-    id: int | None = None
+    id: int | str | None = None
     method: str | None = None
-    params: dict = {}
+    params: Optional[dict] = None
+
+
+async def _dispatch_mcp(msg: MCPMessage, session_id: str = "") -> dict:
+    """统一处理 MCP JSON-RPC（/mcp 与 /mcp/message）。"""
+    msg_id = msg.id
+    method = msg.method
+    params = msg.params if isinstance(msg.params, dict) else {}
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+    if method == "initialize":
+        # 回显客户端协商的协议版本（缺省 2024-11-05）
+        client_pv = params.get("protocolVersion") or "2024-11-05"
+        return {
+            "jsonrpc": "2.0", "id": msg_id,
+            "result": {
+                "protocolVersion": client_pv,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
+            },
+        }
+    if method in ("notifications/initialized", "notifications/cancelled"):
+        return {"jsonrpc": "2.0"}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+    if method == "tools/call":
+        tool_name = params.get("name", "")
+        tool_args = params.get("arguments", {})
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+
+        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
+                         "kb_add", "kb_add_batch"):
+            result = await async_handle_tool(
+                tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine
+            )
+        else:
+            result = await asyncio.to_thread(
+                handle_tool, tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine
+            )
+
+        resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
+        if session_id and session_id in _mcp_sessions:
+            await _mcp_sessions[session_id].put(json.dumps(resp))
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"_delivered": "sse"}}
+        return resp
+
+    return {
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "error": {"code": -32601, "message": f"不支持的方法: {method}"},
+    }
 
 
 @app.post("/mcp/message")
 async def mcp_message(msg: MCPMessage, request: Request, session_id: str = Query("")):
     """MCP 消息端点（SSE 客户端发消息）"""
-    msg_id = msg.id
-    method = msg.method
-
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0", "id": msg_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
-            },
-        }
-    if method in ("notifications/initialized",):
-        return {"jsonrpc": "2.0"}
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
-
-    if method == "tools/call":
-        tool_name = msg.params.get("name", "")
-        tool_args = msg.params.get("arguments", {})
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
-                         "kb_add", "kb_add_batch"):
-            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
-        else:
-            result = await asyncio.to_thread(handle_tool, tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
-
-        resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-
-        # 如果有 SSE session，通过 SSE 推回
-        if session_id and session_id in _mcp_sessions:
-            await _mcp_sessions[session_id].put(json.dumps(resp))
-            return {"jsonrpc": "2.0", "id": msg_id, "result": {"_delivered": "sse"}}
-
-        return resp
-
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
-
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"不支持的方法: {method}"}}
+    return await _dispatch_mcp(msg, session_id=session_id)
 
 
 @app.post("/mcp")
 async def mcp_direct(msg: MCPMessage):
     """MCP 直连端点（直接 POST JSON-RPC，无需 SSE）"""
-    msg_id = msg.id
-    method = msg.method
-
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0", "id": msg_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kb-rag-mcp", "version": "1.1.0"},
-            },
-        }
-    if method in ("notifications/initialized",):
-        return {"jsonrpc": "2.0"}
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
-
-    if method == "tools/call":
-        tool_name = msg.params.get("name", "")
-        tool_args = msg.params.get("arguments", {})
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        if tool_name in ("kb_graph_search", "kb_agentic_search", "kb_graph_status",
-                         "kb_add", "kb_add_batch"):
-            result = await async_handle_tool(tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
-        else:
-            result = await asyncio.to_thread(handle_tool, tool_name, tool_args, app.state.engine, app.state.lightrag, app.state.mem_engine)
-
-        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
-
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"不支持的方法: {method}"}}
+    return await _dispatch_mcp(msg)
 
 
 # ── 前端 ──
