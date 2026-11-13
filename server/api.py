@@ -389,21 +389,50 @@ def memory_items(
 
 @app.get("/api/v1/memory/search")
 def memory_search(
-    query: str = Query(..., description="搜索关键词"),
-    n_results: int = Query(default=10, le=30),
+    query: str = Query(..., description="关键词；匹配 pathsig / 正文 / method / source 等，大小写不敏感子串"),
+    n_results: int = Query(default=50, le=200),
 ):
-    """脑记忆搜索"""
+    """脑记忆关键词搜索（子串匹配，不走语义检索）。
+
+    管理台搜「grep」应能命中 pathsig 里的 grep_search；语义 RRF 对短词/下划线词不友好。
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return {"query": query, "total": 0, "results": []}
+
     mem = app.state.mem_engine
-    raw = mem.search(query=query, n_results=n_results, doc_type="brain_memory")
-    # 用完整 ChromaDB 元数据重新格式化
-    items = []
-    for r in raw:
-        full_meta = mem.collection.get(ids=[r["id"]], include=["metadatas", "documents"])
-        if full_meta and full_meta["ids"]:
-            m = full_meta["metadatas"][0] if full_meta["metadatas"] else {}
-            doc = full_meta["documents"][0] if full_meta["documents"] else ""
-            items.append(_fmt_memory_item(m, doc, r["id"]))
-    return {"query": query, "total": len(items), "results": items}
+    all_mem = mem.collection.get(where={"doc_type": "brain_memory"})
+    items = _fmt_memory_items(all_mem)
+
+    def _haystack(item: dict) -> str:
+        meta = item.get("metadata") or {}
+        parts = [
+            item.get("title") or "",
+            item.get("content") or "",
+            meta.get("target") or "",
+            meta.get("method") or "",
+            meta.get("source") or "",
+            meta.get("params") or "",
+            item.get("id") or "",
+        ]
+        return " ".join(str(p) for p in parts).lower()
+
+    # 多词：全部命中（空格分隔）；单词直接子串
+    tokens = [t for t in q.split() if t]
+    matched = []
+    for item in items:
+        text = _haystack(item)
+        if all(t in text for t in tokens):
+            matched.append(item)
+
+    # 默认按更新时间倒序，与列表页一致
+    def _time_key(x: dict) -> str:
+        meta = x.get("metadata") or {}
+        return meta.get("updated_at") or x.get("created_at") or ""
+
+    matched.sort(key=_time_key, reverse=True)
+    page = matched[:n_results]
+    return {"query": query, "total": len(matched), "returned": len(page), "results": page}
 
 
 def _fmt_memory_items(results: dict) -> list[dict]:

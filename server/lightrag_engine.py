@@ -406,6 +406,33 @@ class LightRAGEngine:
             # 降级：至少返回启用/就绪信息
             return {"enabled": True, "ready": True, "message": str(e)}
 
+    async def _resolve_graph_label(self, query: str) -> Optional[str]:
+        """将用户输入解析为图谱中的真实实体 ID。
+
+        LightRAG get_knowledge_graph 对 node_label 做精确匹配（大小写敏感）。
+        这里先用 search_labels 做大小写不敏感 / 子串模糊匹配，再回落精确 ID。
+        """
+        q = (query or "").strip()
+        if not q or q == "*":
+            return q or "*"
+        graph_store = getattr(self._rag, "chunk_entity_relation_graph", None)
+        if graph_store is None:
+            return q
+        try:
+            if hasattr(graph_store, "search_labels"):
+                matches = await graph_store.search_labels(q, limit=20)
+                if matches:
+                    q_lower = q.lower()
+                    for m in matches:
+                        if str(m).lower() == q_lower:
+                            return str(m)
+                    return str(matches[0])
+            if hasattr(graph_store, "has_node") and await graph_store.has_node(q):
+                return q
+        except Exception as e:
+            logger.warning(f"resolve graph label 失败，回落原始 query: {e}")
+        return q
+
     async def async_get_graph_data(
         self,
         max_nodes: Optional[int] = None,
@@ -420,7 +447,8 @@ class LightRAGEngine:
         try:
             # 前端可视化默认限额；全量仅当显式 query="*" 且传入较大 max_nodes
             limit_nodes = max_nodes if max_nodes is not None else 150
-            kg_query = (query or "").strip() or "*"
+            raw_query = (query or "").strip() or "*"
+            kg_query = await self._resolve_graph_label(raw_query)
             if kg_query == "*" and max_nodes is None:
                 limit_nodes = min(limit_nodes, 200)
             graph = await self._rag.get_knowledge_graph(kg_query, max_nodes=limit_nodes)
@@ -452,7 +480,13 @@ class LightRAGEngine:
                         "label": e_type or e_props.get("description", ""),
                         "weight": e_props.get("weight", 1),
                     })
-            return {"ok": True, "nodes": nodes, "edges": edges}
+            return {
+                "ok": True,
+                "nodes": nodes,
+                "edges": edges,
+                "query": raw_query,
+                "resolved_query": kg_query,
+            }
         except Exception as e:
             logger.error(f"get_graph_data 失败: {e}")
             return {"ok": False, "message": str(e), "nodes": [], "edges": []}

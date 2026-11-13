@@ -170,15 +170,76 @@
     font-size: 11px; color: var(--text2); background: var(--surface2);
     border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
   }
+  .graph-stage {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr minmax(240px, 300px);
+    gap: 12px;
+    min-height: 560px;
+  }
+  .graph-viewport {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #0e141c;
+    overflow: hidden;
+    min-height: 560px;
+  }
   #graphCanvas {
-    width: 100%; height: 600px; border: 1px solid var(--border);
-    border-radius: var(--radius); cursor: grab; background: #0e141c;
-    display: block;
+    width: 100%; height: 560px; cursor: grab; display: block;
+    background:
+      radial-gradient(circle at 50% 45%, rgba(91, 159, 212, 0.05), transparent 55%),
+      #0e141c;
   }
   .graph-empty {
+    position: absolute; inset: 0; z-index: 2;
     display: flex; align-items: center; justify-content: center;
-    height: 600px; border: 1px dashed var(--border); border-radius: var(--radius);
-    color: var(--text2); background: var(--surface); text-align: center; padding: 24px;
+    color: var(--text2); text-align: center; padding: 24px;
+    background: rgba(14, 20, 28, 0.92);
+  }
+  .graph-tooltip {
+    position: absolute; z-index: 5; pointer-events: none;
+    display: none; max-width: 260px;
+    padding: 8px 10px; border-radius: 8px;
+    background: rgba(20, 26, 34, 0.96);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    font-size: 12px; line-height: 1.45; color: var(--text);
+  }
+  .graph-tooltip .tt-title { font-weight: 650; margin-bottom: 2px; }
+  .graph-tooltip .tt-meta { color: var(--text2); font-size: 11px; }
+  .graph-detail {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 14px 12px;
+    min-height: 560px; overflow: auto;
+  }
+  .graph-detail .gd-empty { color: var(--text2); font-size: 13px; padding-top: 40%; text-align: center; }
+  .graph-detail .gd-title { font-size: 16px; font-weight: 650; word-break: break-word; margin-bottom: 8px; }
+  .graph-detail .gd-row { margin-bottom: 10px; font-size: 13px; }
+  .graph-detail .gd-label { color: var(--text2); font-size: 11px; margin-bottom: 2px; }
+  .graph-detail .gd-desc { color: var(--text2); line-height: 1.55; word-break: break-word; }
+  .graph-detail .gd-neighbors { list-style: none; margin: 0; padding: 0; }
+  .graph-detail .gd-neighbors li {
+    padding: 6px 8px; margin-bottom: 4px; border-radius: 8px;
+    background: var(--surface2); border: 1px solid transparent;
+    cursor: pointer; font-size: 12px; word-break: break-word;
+  }
+  .graph-detail .gd-neighbors li:hover { border-color: rgba(91, 159, 212, 0.45); color: var(--accent); }
+  .graph-legend {
+    position: absolute; left: 10px; bottom: 10px; z-index: 3;
+    display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none;
+  }
+  .graph-legend span {
+    font-size: 11px; color: var(--text2); background: rgba(20,26,34,0.85);
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+  }
+  .graph-legend i {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+  }
+  @media (max-width: 900px) {
+    .graph-stage { grid-template-columns: 1fr; }
+    .graph-detail { min-height: 0; max-height: 280px; }
   }
 
   /* JSON editor */
@@ -350,17 +411,29 @@
       <button class="btn btn-primary" onclick="loadGraph()">查询子图</button>
       <button class="btn" onclick="clearGraph()" title="清空画布">清空</button>
       <span id="graphInfo" class="text-muted" style="font-size:12px;"></span>
-      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动 · 滚轮缩放 · R 复位</span>
+      <span class="text-muted" style="margin-left:auto;font-size:12px;">拖动平移 · 滚轮缩放 · 双击聚焦 · R 复位</span>
     </div>
-    <div id="graphEmpty" class="graph-empty">输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。</div>
-    <canvas id="graphCanvas" style="display:none;"></canvas>
-    <div id="graphDetail" class="mt-8 text-muted" style="font-size:13px;"></div>
+    <div class="graph-stage">
+      <div class="graph-viewport">
+        <div id="graphEmpty" class="graph-empty">输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。</div>
+        <canvas id="graphCanvas" style="display:none;"></canvas>
+        <div id="graphTooltip" class="graph-tooltip"></div>
+        <div class="graph-legend">
+          <span><i style="background:#58a6ff"></i>实体</span>
+          <span><i style="background:#3fb950"></i>枢纽更大</span>
+          <span>悬停预览 · 单击详情 · 双击聚焦</span>
+        </div>
+      </div>
+      <aside id="graphDetail" class="graph-detail">
+        <div class="gd-empty">点击节点查看详情与邻接关系</div>
+      </aside>
+    </div>
   </div>
 
   <!-- Memory Panel -->
   <div id="panel-memory" class="panel">
     <div class="toolbar">
-      <input id="memorySearchInput" class="grow" placeholder="搜索路径签名..." onkeydown="if(event.key==='Enter') doMemorySearch()">
+      <input id="memorySearchInput" class="grow" placeholder="搜关键词，如 grep / run_command / 路径片段..." onkeydown="if(event.key==='Enter') doMemorySearch()">
       <select id="memorySort" onchange="onMemorySortChange()" title="排序方式">
         <option value="time" selected>添加/更新时间 ↓</option>
         <option value="tries">尝试次数 ↓</option>
@@ -734,21 +807,28 @@ async function loadStats() {
 // ── Graph Force-Directed Visualization（按需子图，不全量） ──
 
 let graphSimulation = null;
+let graphResizeHandler = null;
 
 function clearGraph() {
   const canvas = document.getElementById('graphCanvas');
   const empty = document.getElementById('graphEmpty');
   const info = document.getElementById('graphInfo');
   const detail = document.getElementById('graphDetail');
+  const tip = document.getElementById('graphTooltip');
   if (graphSimulation) {
     cancelAnimationFrame(graphSimulation);
     graphSimulation = null;
+  }
+  if (graphResizeHandler) {
+    window.removeEventListener('resize', graphResizeHandler);
+    graphResizeHandler = null;
   }
   canvas.style.display = 'none';
   empty.style.display = 'flex';
   empty.textContent = '输入关键词后点击「查询子图」加载局部关系，避免一次拉全库。';
   info.textContent = '';
-  detail.textContent = '';
+  detail.innerHTML = '<div class="gd-empty">点击节点查看详情与邻接关系</div>';
+  if (tip) tip.style.display = 'none';
 }
 
 async function loadGraph() {
@@ -765,7 +845,7 @@ async function loadGraph() {
   }
 
   info.textContent = '加载中...';
-  detail.textContent = '';
+  detail.innerHTML = '<div class="gd-empty">加载中…</div>';
   empty.style.display = 'none';
   canvas.style.display = 'block';
 
@@ -780,6 +860,7 @@ async function loadGraph() {
     empty.style.display = 'flex';
     empty.textContent = `加载失败：${e.message}`;
     canvas.style.display = 'none';
+    detail.innerHTML = '<div class="gd-empty">加载失败</div>';
     return;
   }
 
@@ -788,121 +869,269 @@ async function loadGraph() {
     empty.style.display = 'flex';
     empty.textContent = data.message || '未找到相关节点，换个关键词试试';
     canvas.style.display = 'none';
+    detail.innerHTML = '<div class="gd-empty">未找到节点</div>';
     return;
   }
 
-  info.textContent = `「${query}」· ${data.nodes.length} 节点 · ${data.edges.length} 关系`;
-  renderGraph(canvas, data.nodes, data.edges, detail);
+  const resolved = data.resolved_query || query;
+  const label = (resolved && resolved !== query)
+    ? `「${query}」→「${resolved}」`
+    : `「${resolved || query}」`;
+  info.textContent = `${label} · ${data.nodes.length} 节点 · ${data.edges.length} 关系`;
+  renderGraph(canvas, data.nodes, data.edges, detail, resolved);
 }
 
-function renderGraph(canvas, nodes, edges, detailEl) {
-  // ── Canvas 尺寸（自适应） ──
-  function resizeCanvas() {
-    const parent = canvas.parentElement;
-    const rect = parent.getBoundingClientRect();
-    canvas.width = rect.width - 4 || 900;
-    canvas.height = Math.max(500, Math.min(900, window.innerHeight * 0.7));
-  }
-  resizeCanvas();
-
+function renderGraph(canvas, nodes, edges, detailEl, focusId) {
+  const tipEl = document.getElementById('graphTooltip');
+  const viewport = canvas.parentElement;
   const ctx = canvas.getContext('2d');
-  let W = canvas.width, H = canvas.height;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-  // ── Force params（适配大图） ──
-  const isHugeGraph = nodes.length > 500;
-  const REPULSION = isHugeGraph ? 2000 : 4000;
-  const ATTRACTION = 0.003;
-  const DAMPING = 0.90;
-  const CENTER_FORCE = 0.002;
-  const EDGE_LENGTH = isHugeGraph ? 90 : 140;
-  const COOLDOWN_FRAMES = isHugeGraph ? 150 : 300;  // 节点多时适当减少模拟帧数，防止卡顿
+  let cssW = 0, cssH = 0;
 
-  // ── Build node map ──
-  const nodeList = nodes.map(n => ({
-    ...n,
-    x: W/2 + (Math.random() - 0.5) * W * 0.6,
-    y: H/2 + (Math.random() - 0.5) * H * 0.6,
-    vx: 0, vy: 0,
-    r: Math.max(6, Math.min(18, 8 + (n.description || '').length / 15)),
-  }));
+  function syncCanvasSize() {
+    const rect = viewport.getBoundingClientRect();
+    cssW = Math.max(320, Math.floor(rect.width));
+    cssH = 560;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  syncCanvasSize();
+
+  const nCount = nodes.length;
+  const isDense = nCount > 120;
+  const REPULSION = isDense ? 1800 : 3200;
+  const ATTRACTION = 0.012;
+  const DAMPING = 0.86;
+  const CENTER_FORCE = 0.015;
+  const EDGE_LENGTH = isDense ? 70 : 100;
+  const COOLDOWN_FRAMES = isDense ? 90 : 140;
+  const CELL = isDense ? 80 : 110;
+
+  // degree → radius
+  const degree = {};
+  const adj = {};
+  for (const n of nodes) {
+    degree[n.id] = 0;
+    adj[n.id] = [];
+  }
+  const edgeList = [];
+  for (const e of edges) {
+    if (!(e.source in degree) || !(e.target in degree)) continue;
+    edgeList.push(e);
+    degree[e.source]++;
+    degree[e.target]++;
+    adj[e.source].push(e.target);
+    adj[e.target].push(e.source);
+  }
+  const maxDeg = Math.max(1, ...Object.values(degree));
+
+  const seedId = (focusId && degree[focusId] != null) ? focusId : nodes[0].id;
+  const nodeList = nodes.map((n, i) => {
+    const deg = degree[n.id] || 0;
+    const r = 7 + Math.sqrt(deg / maxDeg) * 14;
+    const angle = (i / Math.max(1, nCount)) * Math.PI * 2;
+    const ring = n.id === seedId ? 0 : (40 + (1 - deg / maxDeg) * (isDense ? 180 : 240));
+    return {
+      ...n,
+      deg,
+      r,
+      x: cssW / 2 + Math.cos(angle) * ring,
+      y: cssH / 2 + Math.sin(angle) * ring,
+      vx: 0,
+      vy: 0,
+    };
+  });
   const nodeMap = {};
   nodeList.forEach(n => { nodeMap[n.id] = n; });
+  // hubs first for hit-test priority when overlapping
+  const hitOrder = [...nodeList].sort((a, b) => b.deg - a.deg);
 
-  const edgeList = edges.filter(e => nodeMap[e.source] && nodeMap[e.target]);
-
-  // ── Color palette ──
   const colors = {
-    'entity': '#58a6ff', 'test_case': '#3fb950', 'doc': '#d29922',
-    'faq': '#f0883e', 'wiki': '#bc8cff', 'concept': '#f85149',
-    'default': '#58a6ff',
+    entity: '#58a6ff', test_case: '#3fb950', doc: '#d29922',
+    faq: '#f0883e', wiki: '#bc8cff', concept: '#f85149',
+    default: '#58a6ff',
   };
   function nodeColor(type) { return colors[type] || colors.default; }
+  const labelFontFamily = getComputedStyle(document.body).fontFamily || 'sans-serif';
 
-  // ── Camera state ──
   let zoom = 1, panX = 0, panY = 0;
   let isDragging = false, dragNode = null, isPanning = false;
-  let selectedNode = null;
+  let selectedNode = null, hoverNode = null;
   let mouseX = 0, mouseY = 0;
   let animId = null;
   let frameCount = 0;
+  let settled = false;
+  let neighborSet = new Set();
+  let didMove = false;
 
-  // ── Zoom to fit on load ──
-  function zoomToFit() {
-    if (nodeList.length === 0) return;
+  function zoomToFit(pad = 56) {
+    if (!nodeList.length) return;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    nodeList.forEach(n => {
+    for (const n of nodeList) {
       if (n.x < minX) minX = n.x;
       if (n.x > maxX) maxX = n.x;
       if (n.y < minY) minY = n.y;
       if (n.y > maxY) maxY = n.y;
-    });
-    const graphW = maxX - minX || 1;
-    const graphH = maxY - minY || 1;
-    const margin = 80;
-    const scaleX = (W - margin * 2) / graphW;
-    const scaleY = (H - margin * 2) / graphH;
-    zoom = Math.min(scaleX, scaleY, 1.5);
-    zoom = Math.max(0.2, zoom);
-    panX = W / 2 - (minX + maxX) / 2 * zoom;
-    panY = H / 2 - (minY + maxY) / 2 * zoom;
+    }
+    const gw = Math.max(1, maxX - minX);
+    const gh = Math.max(1, maxY - minY);
+    zoom = Math.max(0.18, Math.min((cssW - pad * 2) / gw, (cssH - pad * 2) / gh, 1.6));
+    panX = cssW / 2 - (minX + maxX) / 2 * zoom;
+    panY = cssH / 2 - (minY + maxY) / 2 * zoom;
   }
 
-  // ── World ↔ Screen ──
+  function focusNode(n, z = 1.35) {
+    if (!n) return;
+    zoom = Math.max(0.6, Math.min(2.2, z));
+    panX = cssW / 2 - n.x * zoom;
+    panY = cssH / 2 - n.y * zoom;
+    draw();
+  }
+
+  function canvasPoint(e) {
+    const r = canvas.getBoundingClientRect();
+    return { sx: e.clientX - r.left, sy: e.clientY - r.top };
+  }
+
   function screenToWorld(sx, sy) {
     return { x: (sx - panX) / zoom, y: (sy - panY) / zoom };
   }
 
-  // ── Force simulation ──
+  // 屏幕空间最近邻命中，最小约 16px，解决缩放过小/节点过密点不准
+  function findNodeAt(e) {
+    const { sx, sy } = canvasPoint(e);
+    let best = null;
+    let bestD = Infinity;
+    const minHit = 16; // css px
+    for (const n of hitOrder) {
+      const nx = n.x * zoom + panX;
+      const ny = n.y * zoom + panY;
+      const hitR = Math.max(n.r * zoom + 4, minHit);
+      const dx = sx - nx;
+      const dy = sy - ny;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= hitR * hitR && d2 < bestD) {
+        bestD = d2;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  function setSelection(n) {
+    selectedNode = n;
+    neighborSet = new Set(n ? (adj[n.id] || []) : []);
+    renderDetail(n);
+    draw();
+  }
+
+  function renderDetail(n) {
+    if (!n) {
+      detailEl.innerHTML = '<div class="gd-empty">点击节点查看详情与邻接关系</div>';
+      return;
+    }
+    const neigh = (adj[n.id] || [])
+      .map(id => nodeMap[id])
+      .filter(Boolean)
+      .sort((a, b) => b.deg - a.deg)
+      .slice(0, 24);
+    const neighHtml = neigh.length
+      ? `<ul class="gd-neighbors">${neigh.map(x =>
+          `<li data-nid="${esc(x.id)}" title="点击聚焦">${esc(x.name || x.id)} <span class="text-muted">·${x.deg}</span></li>`
+        ).join('')}</ul>`
+      : '<div class="text-muted" style="font-size:12px;">无邻接节点</div>';
+    detailEl.innerHTML = `
+      <div class="gd-title">${esc(n.name || n.id)}</div>
+      <div class="gd-row"><div class="gd-label">类型</div><span class="chip">${esc(n.type || 'entity')}</span></div>
+      <div class="gd-row"><div class="gd-label">连接度</div>${n.deg} 条边</div>
+      <div class="gd-row"><div class="gd-label">描述</div><div class="gd-desc">${esc(n.description || '（无描述）')}</div></div>
+      <div class="gd-row"><div class="gd-label">邻接（点击聚焦）</div>${neighHtml}</div>
+      <div class="gd-row"><div class="gd-label">ID</div><code style="font-size:11px;word-break:break-all;color:var(--text2)">${esc(n.id)}</code></div>
+    `;
+    detailEl.querySelectorAll('[data-nid]').forEach(el => {
+      el.onclick = () => {
+        const target = nodeMap[el.getAttribute('data-nid')];
+        if (!target) return;
+        setSelection(target);
+        focusNode(target, 1.5);
+      };
+    });
+  }
+
+  function showTip(n, e) {
+    if (!tipEl || !n) { if (tipEl) tipEl.style.display = 'none'; return; }
+    const { sx, sy } = canvasPoint(e);
+    tipEl.innerHTML = `<div class="tt-title">${esc(n.name || n.id)}</div>
+      <div class="tt-meta">${esc(n.type || 'entity')} · 度 ${n.deg}</div>`;
+    tipEl.style.display = 'block';
+    const tw = tipEl.offsetWidth || 180;
+    const th = tipEl.offsetHeight || 48;
+    let left = sx + 14;
+    let top = sy + 14;
+    if (left + tw > cssW - 8) left = sx - tw - 10;
+    if (top + th > cssH - 8) top = sy - th - 10;
+    tipEl.style.left = Math.max(6, left) + 'px';
+    tipEl.style.top = Math.max(6, top) + 'px';
+  }
+
+  function hideTip() {
+    if (tipEl) tipEl.style.display = 'none';
+  }
+
+  function buildGrid() {
+    const grid = new Map();
+    for (const n of nodeList) {
+      const key = ((n.x / CELL) | 0) + ',' + ((n.y / CELL) | 0);
+      let bucket = grid.get(key);
+      if (!bucket) { bucket = []; grid.set(key, bucket); }
+      bucket.push(n);
+    }
+    return grid;
+  }
+
   function simulate() {
     frameCount = 0;
+    settled = false;
+    if (animId) cancelAnimationFrame(animId);
+    if (graphSimulation) cancelAnimationFrame(graphSimulation);
 
     function tick() {
       frameCount++;
-      const cooling = Math.max(0.3, 1 - frameCount / COOLDOWN_FRAMES);
+      const cooling = Math.max(0.2, 1 - frameCount / COOLDOWN_FRAMES);
+      const grid = buildGrid();
 
-      // Repulsion
-      for (let i = 0; i < nodeList.length; i++) {
-        const a = nodeList[i];
+      for (const a of nodeList) {
         if (a === dragNode) continue;
-        a.vx += (W / 2 - a.x) * CENTER_FORCE * cooling;
-        a.vy += (H / 2 - a.y) * CENTER_FORCE * cooling;
+        a.vx += (cssW / 2 - a.x) * CENTER_FORCE * cooling * 0.08;
+        a.vy += (cssH / 2 - a.y) * CENTER_FORCE * cooling * 0.08;
 
-        for (let j = i + 1; j < nodeList.length; j++) {
-          const b = nodeList[j];
-          let dx = a.x - b.x;
-          let dy = a.y - b.y;
-          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          let force = REPULSION / (dist * dist) * cooling;
-          let fx = (dx / dist) * force;
-          let fy = (dy / dist) * force;
-          a.vx += fx;
-          a.vy += fy;
-          b.vx -= fx;
-          b.vy -= fy;
+        const cx = (a.x / CELL) | 0;
+        const cy = (a.y / CELL) | 0;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          for (let gy = cy - 1; gy <= cy + 1; gy++) {
+            const bucket = grid.get(gx + ',' + gy);
+            if (!bucket) continue;
+            for (const b of bucket) {
+              if (b.id <= a.id) continue;
+              let dx = a.x - b.x;
+              let dy = a.y - b.y;
+              let dist2 = dx * dx + dy * dy || 1;
+              if (dist2 > CELL * CELL * 2.5) continue;
+              let dist = Math.sqrt(dist2);
+              let force = (REPULSION / dist2) * cooling;
+              let fx = (dx / dist) * force;
+              let fy = (dy / dist) * force;
+              a.vx += fx; a.vy += fy;
+              b.vx -= fx; b.vy -= fy;
+            }
+          }
         }
       }
 
-      // Edge attraction
       for (const e of edgeList) {
         const a = nodeMap[e.source];
         const b = nodeMap[e.target];
@@ -910,19 +1139,16 @@ function renderGraph(canvas, nodes, edges, detailEl) {
         let dx = b.x - a.x;
         let dy = b.y - a.y;
         let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        let displacement = dist - EDGE_LENGTH;
-        let force = displacement * ATTRACTION * cooling;
+        let force = (dist - EDGE_LENGTH) * ATTRACTION * cooling;
         let fx = (dx / dist) * force;
         let fy = (dy / dist) * force;
-        a.vx += fx;
-        a.vy += fy;
-        b.vx -= fx;
-        b.vy -= fy;
+        if (a !== dragNode) { a.vx += fx; a.vy += fy; }
+        if (b !== dragNode) { b.vx -= fx; b.vy -= fy; }
       }
 
-      // Apply velocity
       let energy = 0;
       for (const n of nodeList) {
+        if (n === dragNode) continue;
         n.vx *= DAMPING;
         n.vy *= DAMPING;
         n.x += n.vx;
@@ -930,121 +1156,129 @@ function renderGraph(canvas, nodes, edges, detailEl) {
         energy += n.vx * n.vx + n.vy * n.vy;
       }
 
-      draw();
+      // 降频绘制：前段每帧，后期隔帧
+      if (frameCount < 40 || frameCount % 2 === 0) draw();
 
-      if (energy > 0.5 && !isDragging && frameCount < COOLDOWN_FRAMES) {
+      if (energy > 0.35 && !isDragging && frameCount < COOLDOWN_FRAMES) {
         animId = requestAnimationFrame(tick);
         graphSimulation = animId;
+      } else {
+        settled = true;
+        zoomToFit();
+        draw();
+        // 自动选中焦点实体
+        if (!selectedNode && seedId && nodeMap[seedId]) {
+          setSelection(nodeMap[seedId]);
+        }
       }
     }
-
-    if (animId) cancelAnimationFrame(animId);
-    if (graphSimulation) cancelAnimationFrame(graphSimulation);
     tick();
   }
 
-  // ── Draw ──
-  function draw() {
-    resizeCanvas();
-    W = canvas.width;
-    H = canvas.height;
+  function shortLabel(text, max = 18) {
+    const s = String(text || '');
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
 
-    ctx.clearRect(0, 0, W, H);
+  function draw() {
+    ctx.clearRect(0, 0, cssW, cssH);
     ctx.save();
     ctx.translate(panX, panY);
     ctx.scale(zoom, zoom);
 
-    // Edges
-    ctx.strokeStyle = '#30363d';
-    ctx.lineWidth = 0.8;
+    const showAllLabels = zoom >= 1.1 && nCount <= 80;
+    const showHubLabels = zoom >= 0.55;
+
     for (const e of edgeList) {
       const a = nodeMap[e.source];
       const b = nodeMap[e.target];
       if (!a || !b) continue;
+      const active = selectedNode && (
+        (a.id === selectedNode.id || b.id === selectedNode.id)
+      );
+      const dim = selectedNode && !active;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = active ? 'rgba(91,159,212,0.85)' : (dim ? 'rgba(48,54,61,0.25)' : 'rgba(48,54,61,0.55)');
+      ctx.lineWidth = (active ? 1.6 : 0.7) / zoom;
       ctx.stroke();
     }
 
-    // Nodes
     for (const n of nodeList) {
-      const isSelected = selectedNode && selectedNode.id === n.id;
+      const isSel = selectedNode && selectedNode.id === n.id;
+      const isHover = hoverNode && hoverNode.id === n.id;
+      const isNeigh = neighborSet.has(n.id);
+      const dim = selectedNode && !isSel && !isNeigh;
       const color = nodeColor(n.type || n.doc_type);
-      const r = n.r * (isSelected ? 1.3 : 1);
+      const r = n.r * (isSel ? 1.25 : (isHover ? 1.12 : 1));
 
-      if (isSelected) {
+      if (isSel || isHover) {
         ctx.beginPath();
-        ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(88,166,255,0.2)';
+        ctx.arc(n.x, n.y, r + 5, 0, Math.PI * 2);
+        ctx.fillStyle = isSel ? 'rgba(91,159,212,0.22)' : 'rgba(232,238,245,0.08)';
         ctx.fill();
       }
 
       ctx.beginPath();
       ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      ctx.fillStyle = dim ? 'rgba(88,166,255,0.28)' : color;
       ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = isSelected ? 2 : 0.8;
+      ctx.strokeStyle = isSel ? '#fff' : (isNeigh ? 'rgba(91,159,212,0.9)' : 'rgba(255,255,255,0.35)');
+      ctx.lineWidth = (isSel ? 2.2 : 1) / zoom;
       ctx.stroke();
 
-      // Label (only when zoom > 0.5)
-      if (zoom > 0.5) {
-        ctx.fillStyle = '#e6edf3';
-        ctx.font = `${Math.max(9, 11)}px sans-serif`;
+      const labelOn = isSel || isHover || showAllLabels || (showHubLabels && n.deg >= Math.max(3, maxDeg * 0.35));
+      if (labelOn) {
+        const label = shortLabel(n.name || n.id, isSel || isHover ? 28 : 16);
+        const fs = Math.max(10, 11 / Math.min(zoom, 1.4));
+        ctx.font = `${isSel || isHover ? '600' : '500'} ${fs}px ${labelFontFamily}`;
         ctx.textAlign = 'center';
-        ctx.fillText(n.name || n.id, n.x, n.y + r + 13);
+        ctx.lineWidth = 3 / zoom;
+        ctx.strokeStyle = 'rgba(11,15,20,0.75)';
+        ctx.strokeText(label, n.x, n.y + r + 12);
+        ctx.fillStyle = dim ? 'rgba(232,238,245,0.45)' : '#e8eef5';
+        ctx.fillText(label, n.x, n.y + r + 12);
       }
     }
-
     ctx.restore();
   }
 
-  // ── Mouse ──
-  function getMousePos(e) {
-    const r = canvas.getBoundingClientRect();
-    return screenToWorld(e.clientX - r.left, e.clientY - r.top);
-  }
-
-  function findNodeAt(e) {
-    const pos = getMousePos(e);
-    for (const n of nodeList) {
-      const dx = pos.x - n.x;
-      const dy = pos.y - n.y;
-      if (dx * dx + dy * dy < (n.r + 5) * (n.r + 5)) return n;
-    }
-    return null;
-  }
-
   canvas.onmousedown = (e) => {
+    if (e.button !== 0) return;
+    didMove = false;
     const n = findNodeAt(e);
+    mouseX = e.clientX;
+    mouseY = e.clientY;
     if (n) {
       dragNode = n;
-      selectedNode = n;
       isDragging = true;
       isPanning = false;
       canvas.style.cursor = 'grabbing';
       if (animId) cancelAnimationFrame(animId);
-      detailEl.innerHTML = `<strong>${esc(n.name || n.id)}</strong><br>类型: ${esc(n.type || '-')}<br>描述: ${esc((n.description || '').slice(0, 200))}<br>ID: ${n.id}`;
+      setSelection(n);
+      hideTip();
     } else {
       isPanning = true;
       isDragging = false;
-      selectedNode = null;
-      detailEl.textContent = '';
       canvas.style.cursor = 'grabbing';
     }
-    mouseX = e.clientX;
-    mouseY = e.clientY;
   };
 
   canvas.onmousemove = (e) => {
     if (!isDragging && !isPanning) {
       const n = findNodeAt(e);
       canvas.style.cursor = n ? 'pointer' : 'grab';
+      if (n !== hoverNode) {
+        hoverNode = n;
+        draw();
+      }
+      if (n) showTip(n, e); else hideTip();
       return;
     }
     const dx = e.clientX - mouseX;
     const dy = e.clientY - mouseY;
+    if (Math.abs(dx) + Math.abs(dy) > 2) didMove = true;
     if (isPanning) {
       panX += dx;
       panY += dy;
@@ -1064,60 +1298,72 @@ function renderGraph(canvas, nodes, edges, detailEl) {
       canvas.style.cursor = 'grab';
       return;
     }
-    if (isDragging && dragNode) {
+    if (isDragging) {
       isDragging = false;
+      const moved = didMove;
       dragNode = null;
       canvas.style.cursor = 'grab';
-      simulate();
+      if (moved) simulate();
+      else draw();
     }
   };
 
   canvas.onmouseleave = () => {
+    hoverNode = null;
+    hideTip();
     if (isPanning || isDragging) {
       isPanning = false;
       isDragging = false;
       dragNode = null;
       canvas.style.cursor = 'grab';
-      simulate();
+      if (didMove) simulate();
+      else draw();
     }
   };
 
-  // ── Zoom (centered on cursor) ──
+  canvas.ondblclick = (e) => {
+    e.preventDefault();
+    const n = findNodeAt(e);
+    if (n) {
+      setSelection(n);
+      focusNode(n, 1.6);
+    }
+  };
+
   canvas.onwheel = (e) => {
     e.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    const sx = e.clientX - r.left;
-    const sy = e.clientY - r.top;
-    // World coords before zoom
+    const { sx, sy } = canvasPoint(e);
     const wx = (sx - panX) / zoom;
     const wy = (sy - panY) / zoom;
-
-    const factor = e.deltaY > 0 ? 0.88 : 1.13;
-    zoom = Math.max(0.15, Math.min(5, zoom * factor));
-
-    // Adjust pan so world coords at cursor stay fixed
+    zoom = Math.max(0.12, Math.min(4.5, zoom * (e.deltaY > 0 ? 0.88 : 1.13)));
     panX = sx - wx * zoom;
     panY = sy - wy * zoom;
-
     draw();
   };
 
-  // ── Keyboard: 'r' to reset view ──
-  canvas.onkeydown = (e) => { e.preventDefault(); };
-  canvas.addEventListener('keydown', (e) => {
+  canvas.tabIndex = 0;
+  canvas.onkeydown = (e) => {
     if (e.key === 'r' || e.key === 'R') {
       zoomToFit();
       draw();
     }
-  });
-  canvas.tabIndex = 0;
+  };
 
-  // ── Start ──
-  isDragging = false;
-  dragNode = null;
+  if (graphResizeHandler) window.removeEventListener('resize', graphResizeHandler);
+  graphResizeHandler = () => {
+    const oldW = cssW, oldH = cssH;
+    syncCanvasSize();
+    if (oldW && oldH) {
+      const sx = cssW / oldW, sy = cssH / oldH;
+      panX *= sx; panY *= sy;
+    }
+    draw();
+  };
+  window.addEventListener('resize', graphResizeHandler);
+
+  // start
+  if (graphSimulation) cancelAnimationFrame(graphSimulation);
   simulate();
-  zoomToFit();
-  draw();
 }
 
 // ── Load total count in header ──
@@ -1171,7 +1417,7 @@ async function doMemorySearch() {
   const el = document.getElementById('memoryResults');
   el.innerHTML = '<div class="loading">搜索中...</div>';
   try {
-    const res = await fetch(`${API}/api/v1/memory/search?query=${encodeURIComponent(query)}&n_results=30`);
+    const res = await fetch(`${API}/api/v1/memory/search?query=${encodeURIComponent(query)}&n_results=200`);
     const data = await res.json();
     let items = data.results || [];
     const sortBy = getMemorySort();
@@ -1184,7 +1430,8 @@ async function doMemorySearch() {
         return tb.localeCompare(ta);
       });
     }
-    renderMemoryItems(el, items, items.length, query, sortBy);
+    const totalMatched = data.total != null ? data.total : items.length;
+    renderMemoryItems(el, items, totalMatched, query, sortBy);
   } catch (e) {
     el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">搜索失败: ${e.message}</div>`;
   }
@@ -1192,14 +1439,16 @@ async function doMemorySearch() {
 
 function renderMemoryItems(el, items, total, query, sortBy) {
   if (!items || items.length === 0) {
-    el.innerHTML = '<div class="text-muted" style="padding:20px;text-align:center;">暂无路径记忆</div>';
+    el.innerHTML = query
+      ? `<div class="text-muted" style="padding:20px;text-align:center;">未找到含「${esc(query)}」的路径记忆</div>`
+      : '<div class="text-muted" style="padding:20px;text-align:center;">暂无路径记忆</div>';
     return;
   }
 
   const sortLabel = sortBy === 'tries' ? '尝试次数 ↓' : '添加/更新时间 ↓';
   let html = '';
   if (query) {
-    html += `<div class="text-muted mb-8">搜索「${esc(query)}」共 ${total} 条 · 排序：${sortLabel}</div>`;
+    html += `<div class="text-muted mb-8">关键词「${esc(query)}」命中 ${total} 条 · 排序：${sortLabel}</div>`;
   } else {
     html += `<div class="text-muted mb-8">共 ${total} 条路径记忆 · 排序：${sortLabel}</div>`;
     const totalPages = Math.ceil(total / MEMORY_PAGE_SIZE);
