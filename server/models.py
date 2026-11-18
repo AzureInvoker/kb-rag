@@ -9,6 +9,7 @@ from .taxonomy import (
     infer_source_quality,
     normalize_doc_type,
     normalize_governance_status,
+    normalize_ui_control_metadata,
     now_str,
 )
 
@@ -61,6 +62,8 @@ class KnowledgeItem:
             meta["game"] = self.game
         if self.category and not meta.get("category"):
             meta["category"] = self.category
+        if self.doc_type == "ui_control":
+            meta = normalize_ui_control_metadata(meta)
         self.metadata = meta
 
     def get_embedding_text(self) -> str:
@@ -72,7 +75,11 @@ class KnowledgeItem:
                 f"类型: {self.doc_type}",
                 f"应用: {self.app or meta.get('app', '')}",
                 f"页面: {meta.get('screen', '')}",
+                f"页面ID: {meta.get('page_id', '')}",
+                f"页面类型: {meta.get('page_type', '')}",
                 f"控件ID: {meta.get('control_id', '')}",
+                f"父控件: {meta.get('parent_control_id', '')}",
+                f"作用: {meta.get('purpose', '')}",
                 f"文案: {meta.get('name') or meta.get('text') or ''}",
             ]
             if self.game:
@@ -101,7 +108,10 @@ class KnowledgeItem:
         if self.tags:
             parts.append(", ".join(self.tags))
         if self.doc_type == "ui_control" and self.metadata:
-            for key in ("screen", "control_id", "name", "text", "class_name", "path"):
+            for key in (
+                "screen", "control_id", "name", "text", "class_name", "path",
+                "parent_control_id", "purpose", "page_id", "page_type",
+            ):
                 val = self.metadata.get(key)
                 if val:
                     parts.append(str(val))

@@ -337,17 +337,22 @@
 
   <!-- Controls Panel -->
   <div id="panel-controls" class="panel">
-    <div class="hint">控件专区（ui_control）：按 app → screen 浏览；不进知识图谱。批量粘贴 JSON 数组可导入。</div>
+    <div class="hint">控件专区（ui_control）：按 app → screen/page 浏览；不进知识图谱。可选字段：parent_control_id、purpose、page_id、page_type(native|h5)。</div>
     <div class="toolbar">
       <input id="ctrlApp" class="grow" placeholder="app（必填筛选）" onkeydown="if(event.key==='Enter') loadControls()">
-      <input id="ctrlScreen" placeholder="screen" style="width:140px" onkeydown="if(event.key==='Enter') loadControls()">
-      <input id="ctrlQuery" placeholder="control_id / 文案" style="width:160px" onkeydown="if(event.key==='Enter') loadControls()">
+      <input id="ctrlScreen" placeholder="screen / page_id" style="width:140px" onkeydown="if(event.key==='Enter') loadControls()">
+      <select id="ctrlPageType" title="页面类型" style="width:110px">
+        <option value="">page_type</option>
+        <option value="native">native</option>
+        <option value="h5">h5</option>
+      </select>
+      <input id="ctrlQuery" placeholder="control_id / purpose / 文案" style="width:180px" onkeydown="if(event.key==='Enter') loadControls()">
       <button class="btn btn-primary" onclick="loadControls()">查询</button>
     </div>
     <div id="controlsResults"></div>
     <div class="form-row mt-8">
       <label>批量导入 JSON 数组</label>
-      <textarea id="ctrlBatchJson" class="json-area" rows="5" placeholder='[{"title":"[login] 登录","app":"com.xxx","metadata":{"screen":"login","control_id":"btn_login"}}]'></textarea>
+      <textarea id="ctrlBatchJson" class="json-area" rows="5" placeholder='[{"title":"[login] 登录","app":"com.xxx","metadata":{"screen":"login","control_id":"btn_login","parent_control_id":"root","purpose":"提交登录","page_id":"page_login","page_type":"native"}}]'></textarea>
       <button class="btn btn-primary mt-8" onclick="importControlsBatch()">批量导入</button>
     </div>
   </div>
@@ -386,7 +391,7 @@
     </div>
     <div class="form-row">
       <label>metadata（JSON）</label>
-      <textarea id="addMetadata" class="json-area" placeholder='{"screen":"login","control_id":"btn_ok"} 或 {"module":"登录","priority":"P0"}'></textarea>
+      <textarea id="addMetadata" class="json-area" placeholder='{"screen":"login","control_id":"btn_ok","parent_control_id":"form","purpose":"提交","page_id":"p_login","page_type":"native"} 或 {"module":"登录","priority":"P0"}'></textarea>
     </div>
     <button class="btn btn-primary" onclick="doAdd()">添加</button>
     <div id="addResult" class="mt-8 text-muted"></div>
@@ -654,6 +659,7 @@ async function deleteBrowseItem(id) {
 async function loadControls() {
   const app = document.getElementById('ctrlApp').value.trim();
   const screen = document.getElementById('ctrlScreen').value.trim();
+  const pageType = (document.getElementById('ctrlPageType').value || '').trim();
   const q = document.getElementById('ctrlQuery').value.trim();
   const el = document.getElementById('controlsResults');
   el.innerHTML = '<div class="loading">加载中...</div>';
@@ -663,13 +669,26 @@ async function loadControls() {
     const res = await fetch(`${API}/api/v1/items?${params}`);
     const data = await res.json();
     let items = data.items || [];
-    if (screen) items = items.filter(it => (it.metadata || {}).screen === screen || String((it.metadata || {}).screen || '').includes(screen));
+    if (screen) {
+      const ss = screen.toLowerCase();
+      items = items.filter(it => {
+        const m = it.metadata || {};
+        return String(m.screen || '').toLowerCase().includes(ss)
+          || String(m.page_id || '').toLowerCase().includes(ss);
+      });
+    }
+    if (pageType) {
+      items = items.filter(it => String((it.metadata || {}).page_type || '').toLowerCase() === pageType);
+    }
     if (q) {
       const qq = q.toLowerCase();
       items = items.filter(it => {
         const m = it.metadata || {};
         return (it.title || '').toLowerCase().includes(qq)
           || String(m.control_id || '').toLowerCase().includes(qq)
+          || String(m.parent_control_id || '').toLowerCase().includes(qq)
+          || String(m.purpose || '').toLowerCase().includes(qq)
+          || String(m.page_id || '').toLowerCase().includes(qq)
           || String(m.name || m.text || '').toLowerCase().includes(qq);
       });
     }
@@ -682,8 +701,10 @@ async function loadControls() {
       const m = it.metadata || {};
       html += `<div class="mem-card">
         <div class="mem-head"><strong>${esc(it.title)}</strong> <span class="chip">${esc(it.app || m.app || '-')}</span>
-          <span class="chip">${esc(m.screen || '-')}</span></div>
-        <div class="meta-line">id: ${esc(m.control_id || '-')} · ${esc(m.name || m.text || '')}</div>
+          <span class="chip">${esc(m.screen || m.page_id || '-')}</span>
+          ${m.page_type ? `<span class="chip">${esc(m.page_type)}</span>` : ''}</div>
+        <div class="meta-line">id: ${esc(m.control_id || '-')} · parent: ${esc(m.parent_control_id || '-')} · ${esc(m.name || m.text || '')}</div>
+        <div class="meta-line">作用: ${esc(m.purpose || '-')} · page_id: ${esc(m.page_id || '-')}</div>
         <div class="meta-line">bounds: ${esc(typeof m.bounds === 'object' ? JSON.stringify(m.bounds) : (m.bounds || '-'))}</div>
         <div class="meta-line text-muted">${esc(it.id)}</div>
       </div>`;
@@ -700,20 +721,28 @@ async function importControlsBatch() {
   let arr;
   try { arr = JSON.parse(raw); } catch (e) { toast('JSON 无效', true); return; }
   if (!Array.isArray(arr)) { toast('需要数组', true); return; }
-  const items = arr.map(row => ({
-    title: row.title || row.name || row.control_id || 'control',
-    doc_type: 'ui_control',
-    content: row.content || row.title || '',
-    app: row.app || (row.metadata || {}).app || '',
-    game: row.game || '',
-    tags: row.tags || [],
-    metadata: Object.assign({}, row.metadata || {}, {
-      screen: row.screen || (row.metadata || {}).screen,
-      control_id: row.control_id || (row.metadata || {}).control_id,
-      bounds: row.bounds || (row.metadata || {}).bounds,
-      path: row.path || (row.metadata || {}).path,
-    }),
-  }));
+  const items = arr.map(row => {
+    const base = Object.assign({}, row.metadata || {});
+    const meta = Object.assign({}, base, {
+      screen: row.screen || base.screen,
+      control_id: row.control_id || base.control_id,
+      bounds: row.bounds || base.bounds,
+      path: row.path || base.path,
+      parent_control_id: row.parent_control_id || row.parent_id || base.parent_control_id || base.parent_id,
+      purpose: row.purpose || row.node_purpose || base.purpose || base.node_purpose,
+      page_id: row.page_id || base.page_id,
+      page_type: row.page_type || base.page_type,
+    });
+    return {
+      title: row.title || row.name || row.control_id || 'control',
+      doc_type: 'ui_control',
+      content: row.content || row.title || '',
+      app: row.app || base.app || '',
+      game: row.game || '',
+      tags: row.tags || [],
+      metadata: meta,
+    };
+  });
   const res = await fetch(`${API}/api/v1/items/batch`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ items }),
   });

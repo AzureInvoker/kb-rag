@@ -17,6 +17,7 @@ from .taxonomy import (
     DOC_TYPES,
     compute_next_verify_at,
     normalize_doc_type,
+    normalize_ui_control_metadata,
     require_ui_control_app,
     should_index_graph,
 )
@@ -26,7 +27,8 @@ logger = logging.getLogger("mcp_handler")
 _TYPE_ROUTE = (
     "【类型】doc | test_case | rule | ui_control\n"
     "【路由】文档/问答→doc；用例→test_case；规范→rule；控件→ui_control(必填app)；路径探索→mb_remember\n"
-    "【控件】ui_control 不进知识图谱；检索请带 app/screen\n"
+    "【控件】ui_control 不进知识图谱；检索请带 app/screen/page_id；"
+    "metadata 可选 parent_control_id/purpose/page_id/page_type(native|h5)\n"
 )
 
 
@@ -73,6 +75,8 @@ def _make_item(args: dict) -> KnowledgeItem:
         args.get("app") or raw_meta.get("app"),
         raw_meta,
     )
+    if doc_type == "ui_control":
+        raw_meta = normalize_ui_control_metadata(raw_meta)
 
     item = KnowledgeItem(
         title=title,
@@ -394,7 +398,9 @@ TOOLS = [
         "description": (
             "添加单条知识条目。\n" + _TYPE_ROUTE +
             "【字段】title 必填；doc_type 默认 doc；ui_control 必填 app；"
-            "metadata 可放 screen/control_id/bounds 等；test_case 建议 module/priority。\n"
+            "metadata 可放 screen/control_id/bounds，以及可选 "
+            "parent_control_id(父控件)、purpose(节点作用)、page_id、page_type(native|h5)；"
+            "test_case 建议 module/priority。\n"
             "路径探索经验请用 mb_remember，不要写成 kb。"
         ),
         "inputSchema": {
@@ -403,7 +409,13 @@ TOOLS = [
                 "title": {"type": "string", "description": "标题（必填）"},
                 "doc_type": _DOC_TYPE_PROP,
                 "content": {"type": "string", "description": "正文内容"},
-                "metadata": {"type": "object", "description": "类型专属字段"},
+                "metadata": {
+                    "type": "object",
+                    "description": (
+                        "类型专属字段。ui_control 常用: screen, control_id, bounds, "
+                        "parent_control_id, purpose, page_id, page_type(native|h5)"
+                    ),
+                },
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"},
                 "category": {"type": "string"},
                 "game": {"type": "string"},

@@ -107,7 +107,13 @@ class ItemCreate(BaseModel):
     title: str = Field(..., description="标题")
     doc_type: str = Field(default="doc", description="文档类型: doc|test_case|rule|ui_control")
     content: str = Field(default="", description="正文内容")
-    metadata: dict = Field(default_factory=dict, description="类型专属字段")
+    metadata: dict = Field(
+        default_factory=dict,
+        description=(
+            "类型专属字段。ui_control 可选: screen, control_id, parent_control_id, "
+            "purpose, page_id, page_type(native|h5), bounds"
+        ),
+    )
     tags: list[str] = Field(default_factory=list, description="标签列表")
     category: str = Field(default="", description="业务域")
     game: str = Field(default="", description="游戏")

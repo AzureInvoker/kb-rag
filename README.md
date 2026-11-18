@@ -51,6 +51,16 @@ cp config.example.yaml config.yaml
 | `rule` | 团队规范 |
 | `ui_control` | UI 控件（必填 `app`，**不进** LightRAG） |
 
+`ui_control.metadata` 常用字段（除 `app` 外均可选）：
+
+| 字段 | 说明 |
+|------|------|
+| `screen` / `control_id` | 页面名、控件 id |
+| `parent_control_id` | 父级控件 id（兼容 `parent_id`） |
+| `purpose` | 节点作用（控件用途描述） |
+| `page_id` | 所在页面 id |
+| `page_type` | `native` / `h5` |
+
 路径探索经验只用 `mb_*`，不要写成 kb。
 
 ## 升级已有库（无需重建路径脑）

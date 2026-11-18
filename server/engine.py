@@ -17,6 +17,7 @@ from .taxonomy import (
     infer_source_quality,
     normalize_doc_type,
     normalize_governance_status,
+    normalize_ui_control_metadata,
     now_str,
     require_ui_control_app,
     should_skip_chunking,
@@ -283,6 +284,8 @@ class VectorEngine:
         item.governance_status = normalize_governance_status(item.governance_status)
         item.source_quality = infer_source_quality(item.tags, item.source_quality)
         item.app = require_ui_control_app(item.doc_type, item.app, item.metadata)
+        if item.doc_type == "ui_control":
+            item.metadata = normalize_ui_control_metadata(item.metadata)
         if item.app and isinstance(item.metadata, dict):
             item.metadata["app"] = item.app
         if not item.created_at:

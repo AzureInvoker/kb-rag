@@ -322,7 +322,13 @@ def test_chunk_split_and_dedupe():
 
 
 def test_normalize_doc_type():
-    from server.taxonomy import normalize_doc_type, require_ui_control_app
+    from server.taxonomy import (
+        normalize_doc_type,
+        normalize_page_type,
+        normalize_ui_control_metadata,
+        require_ui_control_app,
+    )
+    from server.models import KnowledgeItem
 
     assert normalize_doc_type("wiki") == "doc"
     assert normalize_doc_type("faq") == "doc"
@@ -334,6 +340,39 @@ def test_normalize_doc_type():
     except ValueError:
         pass
     assert require_ui_control_app("ui_control", "com.x", {}) == "com.x"
+
+    assert normalize_page_type("H5") == "h5"
+    assert normalize_page_type("webview") == "h5"
+    assert normalize_page_type("android") == "native"
+    assert normalize_page_type("") == ""
+    assert normalize_page_type("unknown") == ""
+
+    meta = normalize_ui_control_metadata({
+        "parent_id": "root_form",
+        "node_purpose": "提交登录",
+        "pageId": "page_login",
+        "pageType": "Native",
+        "control_id": "btn_ok",
+    })
+    assert meta["parent_control_id"] == "root_form"
+    assert meta["purpose"] == "提交登录"
+    assert meta["page_id"] == "page_login"
+    assert meta["page_type"] == "native"
+
+    item = KnowledgeItem(
+        title="登录按钮",
+        doc_type="ui_control",
+        content="ok",
+        app="com.demo",
+        metadata={"parent_id": "p1", "purpose": "提交", "page_id": "pg1", "page_type": "h5"},
+    )
+    emb = item.get_embedding_text()
+    assert "父控件: p1" in emb
+    assert "作用: 提交" in emb
+    assert "页面ID: pg1" in emb
+    assert "页面类型: h5" in emb
+    bm = item.get_bm25_text()
+    assert "提交" in bm and "pg1" in bm and "h5" in bm
     print("  ✅ test_normalize_doc_type")
 
 
