@@ -128,6 +128,46 @@
   }
   .data-table th { color: var(--text2); font-weight: 500; background: var(--surface2); }
   .data-table tr:last-child td { border-bottom: none; }
+  .data-table tr.browse-row:hover td { background: var(--surface2); }
+  .data-table tr.browse-row.active td { background: var(--accent-soft); }
+  .data-table tr.browse-detail-row td {
+    padding: 0; background: var(--bg); border-bottom: 1px solid var(--border);
+  }
+  .browse-detail-panel {
+    padding: 14px 16px 16px; border-left: 3px solid var(--accent);
+    margin: 0 8px 10px; background: var(--surface); border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .md-body {
+    color: var(--text); font-size: 13px; line-height: 1.65;
+    word-break: break-word;
+  }
+  .md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+    margin: 0.9em 0 0.4em; font-weight: 650; line-height: 1.3; color: var(--text);
+  }
+  .md-body h1 { font-size: 1.35em; } .md-body h2 { font-size: 1.2em; }
+  .md-body h3 { font-size: 1.08em; } .md-body h4 { font-size: 1em; }
+  .md-body p { margin: 0.45em 0; }
+  .md-body ul, .md-body ol { margin: 0.4em 0 0.4em 1.3em; padding: 0; }
+  .md-body li { margin: 0.2em 0; }
+  .md-body blockquote {
+    margin: 0.6em 0; padding: 6px 12px; border-left: 3px solid var(--accent);
+    color: var(--text2); background: var(--accent-soft);
+  }
+  .md-body code {
+    font-family: Consolas, "Courier New", monospace; font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .md-body pre {
+    margin: 0.6em 0; padding: 10px 12px; overflow-x: auto;
+    background: #0e141c; border: 1px solid var(--border); border-radius: 8px;
+  }
+  .md-body pre code { background: none; border: none; padding: 0; color: #d7dee8; }
+  .md-body a { color: var(--accent); text-decoration: underline; }
+  .md-body table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 12px; }
+  .md-body th, .md-body td { border: 1px solid var(--border); padding: 6px 8px; }
+  .md-body th { background: var(--surface2); }
+  .md-body hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
 
   /* Stats */
   .stat-card {
@@ -332,7 +372,6 @@
       <button class="btn" onclick="loadBrowse()">刷新</button>
     </div>
     <div id="browseResults"></div>
-    <div id="browseDetail" class="mt-8"></div>
   </div>
 
   <!-- Controls Panel -->
@@ -538,14 +577,20 @@ async function doSearch() {
 // ── Browse ──
 let browsePage = 0;
 const PAGE_SIZE = 20;
+let browseOpenId = null;
+let browseEditMode = false;
+const browseItemCache = {};
 
-async function loadBrowse() {
+async function loadBrowse(keepOpenId) {
   const docType = document.getElementById('browseType').value;
   const status = (document.getElementById('browseStatus') || {}).value || '';
   const game = (document.getElementById('browseGame') || {}).value?.trim() || '';
   const el = document.getElementById('browseResults');
-  const detail = document.getElementById('browseDetail');
-  if (detail) detail.innerHTML = '';
+  const reopen = keepOpenId || null;
+  if (!keepOpenId) {
+    browseOpenId = null;
+    browseEditMode = false;
+  }
   el.innerHTML = '<div class="loading">加载中...</div>';
 
   try {
@@ -568,11 +613,12 @@ async function loadBrowse() {
     let html = `<div class="text-muted mb-8">共 ${data.total} 条，显示 ${start}-${end}</div>`;
     html += '<table class="data-table"><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>时间</th></tr></thead><tbody>';
     for (const item of data.items) {
-      html += `<tr style="cursor:pointer" onclick="openBrowseDetail('${item.id}')">
-        <td><strong>${esc(item.title)}</strong><br><span class="text-muted" style="font-size:11px;">${item.id}</span></td>
+      html += `<tr class="browse-row" data-id="${esc(item.id)}" style="cursor:pointer" onclick="toggleBrowseDetail('${item.id}')">
+        <td><strong>${esc(item.title)}</strong><br><span class="text-muted" style="font-size:11px;">${esc(item.id)}</span></td>
         <td>${esc(item.doc_type)}</td>
         <td>${statusDot(item.governance_status)}</td>
-        <td class="text-muted">${esc(item.updated_at || item.created_at || '-')}</td></tr>`;
+        <td class="text-muted">${esc(item.updated_at || item.created_at || '-')}</td></tr>
+        <tr class="browse-detail-row" id="browse-detail-${esc(item.id)}" style="display:none"><td colspan="4"></td></tr>`;
     }
     html += '</tbody></table>';
 
@@ -586,39 +632,121 @@ async function loadBrowse() {
     html += '</div>';
 
     el.innerHTML = html;
+    if (reopen) openBrowseDetail(reopen, { force: true, edit: browseEditMode });
   } catch (e) {
     el.innerHTML = `<div class="text-muted" style="padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
   }
 }
 
-async function openBrowseDetail(id) {
-  const el = document.getElementById('browseDetail');
-  el.innerHTML = '<div class="loading">加载详情...</div>';
-  try {
-    const res = await fetch(`${API}/api/v1/items/${id}`);
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-    const item = await res.json();
-    el.innerHTML = `
-      <div class="stat-card">
-        <div class="flex-row mb-8"><strong>${esc(item.title)}</strong> ${statusDot(item.governance_status)} <span class="type-tag">${esc(item.doc_type)}</span></div>
-        <div class="form-row"><label>标题</label><input id="editTitle" value="${esc(item.title)}"></div>
-        <div class="form-row"><label>正文</label><textarea id="editContent" rows="6">${esc(item.content || '')}</textarea></div>
-        <div class="form-row"><label>tags（逗号分隔）</label><input id="editTags" value="${esc((item.tags || []).join(', '))}"></div>
-        <div class="form-row"><label>game / app</label>
-          <div class="flex-row"><input id="editGame" value="${esc(item.game || '')}" placeholder="game" style="flex:1">
-          <input id="editApp" value="${esc(item.app || '')}" placeholder="app" style="flex:1"></div>
-        </div>
-        <div class="flex-row mt-8">
-          <button class="btn btn-primary" onclick="saveBrowseItem('${item.id}')">保存</button>
-          <button class="btn" onclick="itemAction('${item.id}','reverify')">Reverify</button>
-          <button class="btn" onclick="itemAction('${item.id}','deprecate')">Deprecate</button>
-          <button class="btn btn-danger" onclick="deleteBrowseItem('${item.id}')">删除</button>
-        </div>
-        <pre class="text-muted mt-8" style="white-space:pre-wrap;font-size:12px;">${esc(JSON.stringify(item.metadata || {}, null, 2))}</pre>
-      </div>`;
-  } catch (e) {
-    el.innerHTML = `<div class="text-muted">加载失败: ${e.message}</div>`;
+function closeBrowseDetailRows() {
+  document.querySelectorAll('.browse-detail-row').forEach(row => {
+    row.style.display = 'none';
+    row.querySelector('td').innerHTML = '';
+  });
+  document.querySelectorAll('.browse-row.active').forEach(r => r.classList.remove('active'));
+}
+
+async function toggleBrowseDetail(id) {
+  if (browseOpenId === id) {
+    closeBrowseDetailRows();
+    browseOpenId = null;
+    browseEditMode = false;
+    return;
   }
+  browseEditMode = false;
+  await openBrowseDetail(id, { force: true });
+}
+
+function renderBrowseDetailPanel(item, editMode) {
+  const id = item.id;
+  const metaJson = esc(JSON.stringify(item.metadata || {}, null, 2));
+  if (!editMode) {
+    return `
+      <div class="browse-detail-panel" onclick="event.stopPropagation()">
+        <div class="flex-row mb-8" style="flex-wrap:wrap;gap:8px;">
+          <strong>${esc(item.title)}</strong>
+          ${statusDot(item.governance_status)}
+          <span class="chip">${esc(item.doc_type)}</span>
+          ${item.app ? `<span class="chip">app: ${esc(item.app)}</span>` : ''}
+          ${item.game ? `<span class="chip">game: ${esc(item.game)}</span>` : ''}
+        </div>
+        <div class="md-body">${renderMarkdown(item.content || '')}</div>
+        <div class="flex-row mt-8" style="flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="setBrowseEditMode('${id}', true)">编辑</button>
+          <button class="btn" onclick="itemAction('${id}','reverify')">Reverify</button>
+          <button class="btn" onclick="itemAction('${id}','deprecate')">Deprecate</button>
+          <button class="btn btn-danger" onclick="deleteBrowseItem('${id}')">删除</button>
+          <button class="btn" onclick="toggleBrowseDetail('${id}')">收起</button>
+        </div>
+        <details class="mt-8">
+          <summary class="text-muted" style="cursor:pointer;font-size:12px;">metadata / tags</summary>
+          <div class="meta-line mt-8">tags: ${esc((item.tags || []).join(', ') || '-')}</div>
+          <pre class="text-muted mt-8" style="white-space:pre-wrap;font-size:12px;">${metaJson}</pre>
+        </details>
+      </div>`;
+  }
+  return `
+    <div class="browse-detail-panel" onclick="event.stopPropagation()">
+      <div class="form-row"><label>标题</label><input id="editTitle" value="${esc(item.title)}"></div>
+      <div class="form-row"><label>正文（支持 Markdown）</label>
+        <textarea id="editContent" rows="10">${esc(item.content || '')}</textarea>
+      </div>
+      <div class="form-row"><label>tags（逗号分隔）</label><input id="editTags" value="${esc((item.tags || []).join(', '))}"></div>
+      <div class="form-row"><label>game / app</label>
+        <div class="flex-row"><input id="editGame" value="${esc(item.game || '')}" placeholder="game" style="flex:1">
+        <input id="editApp" value="${esc(item.app || '')}" placeholder="app" style="flex:1"></div>
+      </div>
+      <div class="flex-row mt-8" style="flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="saveBrowseItem('${id}')">保存</button>
+        <button class="btn" onclick="setBrowseEditMode('${id}', false)">取消编辑</button>
+        <button class="btn" onclick="itemAction('${id}','reverify')">Reverify</button>
+        <button class="btn" onclick="itemAction('${id}','deprecate')">Deprecate</button>
+        <button class="btn btn-danger" onclick="deleteBrowseItem('${id}')">删除</button>
+      </div>
+      <pre class="text-muted mt-8" style="white-space:pre-wrap;font-size:12px;">${metaJson}</pre>
+    </div>`;
+}
+
+async function openBrowseDetail(id, opts = {}) {
+  const force = !!opts.force;
+  const edit = !!opts.edit;
+  const detailRow = document.getElementById(`browse-detail-${id}`);
+  const dataRow = document.querySelector(`.browse-row[data-id="${CSS.escape(id)}"]`);
+  if (!detailRow) return;
+
+  if (!force && browseOpenId === id && detailRow.style.display !== 'none') {
+    return;
+  }
+
+  closeBrowseDetailRows();
+  browseOpenId = id;
+  browseEditMode = edit;
+  if (dataRow) dataRow.classList.add('active');
+  detailRow.style.display = 'table-row';
+  detailRow.querySelector('td').innerHTML = '<div class="browse-detail-panel loading">加载详情...</div>';
+
+  try {
+    let item = browseItemCache[id];
+    if (!item || force) {
+      const res = await fetch(`${API}/api/v1/items/${id}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      item = await res.json();
+      browseItemCache[id] = item;
+    }
+    detailRow.querySelector('td').innerHTML = renderBrowseDetailPanel(item, browseEditMode);
+    detailRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    detailRow.querySelector('td').innerHTML = `<div class="browse-detail-panel text-muted">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function setBrowseEditMode(id, edit) {
+  const item = browseItemCache[id];
+  if (!item) { openBrowseDetail(id, { force: true, edit }); return; }
+  browseEditMode = !!edit;
+  const detailRow = document.getElementById(`browse-detail-${id}`);
+  if (!detailRow) return;
+  detailRow.querySelector('td').innerHTML = renderBrowseDetailPanel(item, browseEditMode);
 }
 
 async function saveBrowseItem(id) {
@@ -635,16 +763,17 @@ async function saveBrowseItem(id) {
   });
   if (!res.ok) { toast((await res.json().catch(()=>({}))).detail || '保存失败', true); return; }
   toast('已保存');
-  loadBrowse();
-  openBrowseDetail(id);
+  delete browseItemCache[id];
+  browseEditMode = false;
+  await loadBrowse(id);
 }
 
 async function itemAction(id, action) {
   const res = await fetch(`${API}/api/v1/items/${id}/${action}`, { method: 'POST' });
   if (!res.ok) { toast((await res.json().catch(()=>({}))).detail || '操作失败', true); return; }
   toast(action + ' 成功');
-  loadBrowse();
-  openBrowseDetail(id);
+  delete browseItemCache[id];
+  await loadBrowse(id);
 }
 
 async function deleteBrowseItem(id) {
@@ -652,7 +781,9 @@ async function deleteBrowseItem(id) {
   const res = await fetch(`${API}/api/v1/items/${id}`, { method: 'DELETE' });
   if (!res.ok) { toast('删除失败', true); return; }
   toast('已删除');
-  document.getElementById('browseDetail').innerHTML = '';
+  delete browseItemCache[id];
+  browseOpenId = null;
+  browseEditMode = false;
   loadBrowse();
 }
 
@@ -1596,6 +1727,127 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+
+/** 轻量 Markdown → HTML（无外网依赖）；输出已做基础转义。 */
+function renderMarkdown(src) {
+  let text = String(src || '').replace(/\r\n/g, '\n');
+  const fences = [];
+  text = text.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = fences.length;
+    fences.push(`<pre><code class="language-${esc(lang || '')}">${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    return `\u0000FENCE${i}\u0000`;
+  });
+
+  const lines = text.split('\n');
+  const out = [];
+  let inUl = false, inOl = false, inQuote = false, inTable = false;
+  let para = [];
+
+  function closeLists() {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  }
+  function closeQuote() {
+    if (inQuote) { out.push('</blockquote>'); inQuote = false; }
+  }
+  function closeTable() {
+    if (inTable) { out.push('</tbody></table>'); inTable = false; }
+  }
+  function flushPara() {
+    if (!para.length) return;
+    out.push('<p>' + para.join('<br>') + '</p>');
+    para = [];
+  }
+  function inlineFmt(s) {
+    let t = esc(s);
+    t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    t = t.replace(/(^|[^\*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+    t = t.replace(/(^|[^_])_([^_]+)_(?!_)/g, '$1<em>$2</em>');
+    t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return t;
+  }
+  function isTableSep(line) {
+    return /^\s*\|?[\s:-]+\|[\s|:-]*\|?\s*$/.test(line) && line.indexOf('|') >= 0;
+  }
+  function splitCells(line) {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const fenceMatch = raw.match(/^\u0000FENCE(\d+)\u0000$/);
+    if (fenceMatch) {
+      flushPara(); closeLists(); closeQuote(); closeTable();
+      out.push(fences[Number(fenceMatch[1])]);
+      continue;
+    }
+    if (/^\s*$/.test(raw)) {
+      flushPara(); closeLists(); closeQuote(); closeTable();
+      continue;
+    }
+    if (/^---+\s*$/.test(raw) || /^\*\*\*+\s*$/.test(raw)) {
+      flushPara(); closeLists(); closeQuote(); closeTable();
+      out.push('<hr>');
+      continue;
+    }
+    const hm = raw.match(/^(#{1,4})\s+(.+)$/);
+    if (hm) {
+      flushPara(); closeLists(); closeQuote(); closeTable();
+      const lv = hm[1].length;
+      out.push(`<h${lv}>${inlineFmt(hm[2])}</h${lv}>`);
+      continue;
+    }
+    if (/^>\s?/.test(raw)) {
+      flushPara(); closeLists(); closeTable();
+      if (!inQuote) { out.push('<blockquote>'); inQuote = true; }
+      out.push('<p>' + inlineFmt(raw.replace(/^>\s?/, '')) + '</p>');
+      continue;
+    } else {
+      closeQuote();
+    }
+    // table
+    if (raw.indexOf('|') >= 0 && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara(); closeLists(); closeQuote();
+      const heads = splitCells(raw);
+      out.push('<table><thead><tr>' + heads.map(h => `<th>${inlineFmt(h)}</th>`).join('') + '</tr></thead><tbody>');
+      inTable = true;
+      i++; // skip separator
+      continue;
+    }
+    if (inTable && raw.indexOf('|') >= 0) {
+      const cells = splitCells(raw);
+      out.push('<tr>' + cells.map(c => `<td>${inlineFmt(c)}</td>`).join('') + '</tr>');
+      continue;
+    } else {
+      closeTable();
+    }
+
+    const ul = raw.match(/^\s*[-*+]\s+(.+)$/);
+    if (ul) {
+      flushPara();
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul>'); inUl = true; }
+      out.push('<li>' + inlineFmt(ul[1]) + '</li>');
+      continue;
+    }
+    const ol = raw.match(/^\s*\d+\.\s+(.+)$/);
+    if (ol) {
+      flushPara(); if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol>'); inOl = true; }
+      out.push('<li>' + inlineFmt(ol[1]) + '</li>');
+      continue;
+    }
+    closeLists();
+    para.push(inlineFmt(raw));
+  }
+  flushPara(); closeLists(); closeQuote(); closeTable();
+  return out.join('\n') || '<p class="text-muted">（无正文）</p>';
 }
 
 loadTotal();
